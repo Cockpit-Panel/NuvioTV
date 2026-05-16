@@ -30,7 +30,7 @@ Built with Kotlin and optimized for a TV-first viewing experience.
 
 ### Android TV
 
-Download the latest APK from [GitHub Releases](https://github.com/tapframe/NuvioTV/releases/latest) and install on your Android TV device.
+Download the latest APK from [GitHub Releases](https://github.com/Cockpit-Panel/NuvioTV/releases/latest) and install on your Android TV device.
 
 ## Development
 
