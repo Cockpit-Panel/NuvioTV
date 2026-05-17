@@ -5,6 +5,10 @@ on:
     branches:
       - main
       - dev
+    tags:
+      - 'v*'
+      - '*-beta*'
+      - '*-rc*'
   pull_request:
     paths:
       - app/**
@@ -16,7 +20,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   assemble-full-release:
@@ -80,3 +84,22 @@ jobs:
             app/build/outputs/apk/full/release/app-full-armeabi-v7a-release.apk
             app/build/outputs/apk/full/release/output-metadata.json
             app/build/outputs/mapping/fullRelease/mapping.txt
+
+      - name: Publish GitHub release for tag
+        if: ${{ github.ref_type == 'tag' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          prerelease_args=()
+          case "$RELEASE_TAG" in
+            *-beta*|*-rc*) prerelease_args+=(--prerelease) ;;
+          esac
+
+          gh release create "$RELEASE_TAG" \
+            app/build/outputs/apk/full/release/app-full-universal-release.apk \
+            app/build/outputs/apk/full/release/app-full-arm64-v8a-release.apk \
+            app/build/outputs/apk/full/release/app-full-armeabi-v7a-release.apk \
+            --title "$RELEASE_TAG" \
+            --generate-notes \
+            "${prerelease_args[@]}"
