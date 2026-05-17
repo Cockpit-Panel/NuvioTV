@@ -8,7 +8,7 @@ on:
       upstream_ref:
         description: Upstream branch to sync from
         required: true
-        default: main
+        default: dev
         type: string
       target_branch:
         description: Fork branch to update automatically
@@ -27,8 +27,8 @@ jobs:
   sync-upstream:
     runs-on: ubuntu-latest
     env:
-      UPSTREAM_REPO: tapframe/NuvioTV
-      DEFAULT_UPSTREAM_REF: main
+      UPSTREAM_REPO: NuvioMedia/NuvioTV
+      DEFAULT_UPSTREAM_REF: dev
       DEFAULT_TARGET_BRANCH: dev
 
     steps:

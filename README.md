@@ -26,7 +26,7 @@ This fork is maintained by Cockpit Panel and differs from upstream NuvioTV in th
 - it publishes Cockpit-branded APK releases from this repository instead of the upstream repo
 - it includes GitHub automation to keep upstream changes flowing into the fork through sync pull requests, rebuild Android release APKs on merges, and publish tagged releases automatically
 
-The day-to-day branch for this fork is `dev`. Upstream changes from `tapframe/NuvioTV` are synced into `dev` through GitHub Actions, reviewed in a PR, and then built automatically after merge.
+The day-to-day branch for this fork is `dev`. Upstream changes from `NuvioMedia/NuvioTV:dev` are synced into `dev` through GitHub Actions and then built automatically after merge.
 
 ## About
 

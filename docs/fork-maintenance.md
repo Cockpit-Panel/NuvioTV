@@ -10,12 +10,12 @@ This fork keeps the Cockpit-specific auth, updater, and release workflow changes
 
 ## Upstream sync workflow
 
-The fork should keep all Cockpit-specific work on `dev` and treat `tapframe/NuvioTV` as the upstream source.
+The fork should keep all Cockpit-specific work on `dev` and treat `NuvioMedia/NuvioTV:dev` as the upstream source.
 
 ### GitHub-first sync flow
 
 1. `upstream-sync.yml` runs on a schedule and can also be started manually from Actions.
-2. The workflow fetches `tapframe/NuvioTV` and merges `upstream/main` directly into `dev`.
+2. The workflow fetches `NuvioMedia/NuvioTV` and merges `upstream/dev` directly into `dev`.
 3. The merge uses `git merge -X ours`, which means any conflicting hunk automatically keeps the Cockpit fork's side of the file.
 4. Every successful sync push into `dev` triggers `android-release-build.yml`, which rebuilds the app automatically.
 5. When you want a distributable release, push a version tag from `dev`. The tag-triggered release workflow will build the APKs and publish a GitHub Release.
@@ -27,7 +27,7 @@ This is the fully automatic path: upstream intake and app builds happen through 
 1. Add the original repository once:
 
 ```bash
-git remote add upstream https://github.com/tapframe/NuvioTV.git
+git remote add upstream https://github.com/NuvioMedia/NuvioTV.git
 ```
 
 2. Enable recorded conflict resolutions so repeat merges get easier:
@@ -42,9 +42,9 @@ git config rerere.enabled true
 git fetch upstream
 git checkout dev
 git pull origin dev
-git checkout -b upstream-sync upstream/main
+git checkout -b upstream-sync upstream/dev
 git merge origin/dev
-git merge upstream/main
+git merge upstream/dev
 ```
 
 4. Resolve conflicts there, run the release build, then merge the integration branch back into `dev`.
