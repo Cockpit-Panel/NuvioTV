@@ -320,6 +320,7 @@ class StartupSyncService @Inject constructor(
             val isTraktConnected = traktAuthDataStore.isEffectivelyAuthenticated.first()
             val shouldUseSupabaseWatchProgressSync = watchProgressSyncService.shouldUseSupabaseWatchProgressSync()
             watchProgressSyncService.restoreLastPushTimestamp()
+            watchedItemsSyncService.restoreLastPushTimestamp()
             Log.d(
                 TAG,
                 "Watch progress sync: isTraktConnected=$isTraktConnected shouldUseSupabaseWatchProgressSync=$shouldUseSupabaseWatchProgressSync"
@@ -345,7 +346,10 @@ class StartupSyncService @Inject constructor(
                 try {
                     val remoteWatchedItems = watchedItemsSyncService.pullFromRemote().getOrElse { throw it }
                     Log.d(TAG, "Pulled ${remoteWatchedItems.size} watched items from remote")
-                    watchedItemsPreferences.replaceWithRemoteItems(remoteWatchedItems)
+                    watchedItemsPreferences.replaceWithRemoteItems(
+                        remoteWatchedItems,
+                        lastSuccessfulPushMs = watchedItemsSyncService.lastSuccessfulPushMs
+                    )
                     watchProgressRepository.hasCompletedInitialWatchedItemsPull = true
                     Log.d(TAG, "Reconciled local watched items with ${remoteWatchedItems.size} remote items")
                 } catch (e: Exception) {
@@ -373,7 +377,10 @@ class StartupSyncService @Inject constructor(
                 try {
                     val remoteWatchedItems = watchedItemsSyncService.pullFromRemote().getOrElse { throw it }
                     Log.d(TAG, "Pulled ${remoteWatchedItems.size} watched items from remote")
-                    watchedItemsPreferences.replaceWithRemoteItems(remoteWatchedItems)
+                    watchedItemsPreferences.replaceWithRemoteItems(
+                        remoteWatchedItems,
+                        lastSuccessfulPushMs = watchedItemsSyncService.lastSuccessfulPushMs
+                    )
                     watchProgressRepository.hasCompletedInitialWatchedItemsPull = true
                     Log.d(TAG, "Reconciled local watched items with ${remoteWatchedItems.size} remote items")
                 } catch (e: Exception) {
