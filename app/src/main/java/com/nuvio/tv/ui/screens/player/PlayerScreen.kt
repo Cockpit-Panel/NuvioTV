@@ -453,7 +453,10 @@ fun PlayerScreen(
                                     return@onKeyEvent true
                                 }
                                 KeyEvent.KEYCODE_DPAD_CENTER,
-                                KeyEvent.KEYCODE_ENTER,
+                                KeyEvent.KEYCODE_ENTER -> {
+                                    viewModel.onEvent(PlayerEvent.OnResetSubtitleDelay)
+                                    return@onKeyEvent true
+                                }
                                 KeyEvent.KEYCODE_DPAD_UP -> {
                                     return@onKeyEvent true
                                 }
@@ -943,6 +946,9 @@ fun PlayerScreen(
                     subtitleDelayAutoSyncFocused = false
                     subtitleTimingConsumeNextConfirmKeyUp = true
                     viewModel.onEvent(PlayerEvent.OnShowSubtitleTimingDialog)
+                },
+                onResetDelay = {
+                    viewModel.onEvent(PlayerEvent.OnResetSubtitleDelay)
                 }
             )
         }
@@ -2269,7 +2275,8 @@ private fun SubtitleDelayOverlay(
     subtitleDelayMs: Int,
     isAutoSyncButtonFocused: Boolean,
     isSliderFocused: Boolean,
-    onOpenSyncByLine: () -> Unit
+    onOpenSyncByLine: () -> Unit,
+    onResetDelay: () -> Unit = {}
 ) {
     val fraction = ((subtitleDelayMs - SUBTITLE_DELAY_MIN_MS).toFloat() /
         (SUBTITLE_DELAY_MAX_MS - SUBTITLE_DELAY_MIN_MS).toFloat()).coerceIn(0f, 1f)
