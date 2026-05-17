@@ -972,7 +972,11 @@ fun NuvioNavHost(
                 showBuiltInHeader = !hideBuiltInHeaders,
                 onNavigateToTrakt = { navController.navigate(Screen.Trakt.route) },
                 onNavigateToAddons = { navController.navigate(Screen.AddonManager.route) },
-                onNavigateToAuthQrSignIn = { navController.navigate(Screen.AuthQrSignIn.route) },
+                onNavigateToAuthSignIn = {
+                    navController.navigate(Screen.AuthSignIn.route) {
+                        launchSingleTop = true
+                    }
+                },
                 onNavigateToManageProfiles = { navController.navigate(Screen.ManageProfiles.route) },
                 onNavigateToSupportersContributors = {
                     navController.navigate(Screen.SupportersContributors.route)
@@ -1101,22 +1105,23 @@ fun NuvioNavHost(
         }
 
         composable(Screen.Account.route) {
-            AuthQrSignInScreen(
-                onBackPress = { navController.popBackStack() }
+            AuthSignInScreen(
+                onBackPress = { navController.popBackStack() },
+                onSuccess = { navController.popBackStack() }
             )
         }
 
         composable(Screen.AuthSignIn.route) {
             AuthSignInScreen(
                 onBackPress = { navController.popBackStack() },
-                onNavigateToQrSignIn = { navController.navigate(Screen.AuthQrSignIn.route) },
                 onSuccess = { navController.popBackStack() }
             )
         }
 
         composable(Screen.AuthQrSignIn.route) {
-            AuthQrSignInScreen(
-                onBackPress = { navController.popBackStack() }
+            AuthSignInScreen(
+                onBackPress = { navController.popBackStack() },
+                onSuccess = { navController.popBackStack() }
             )
         }
 

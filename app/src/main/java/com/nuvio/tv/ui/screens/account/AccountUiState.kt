@@ -1,6 +1,7 @@
 package com.nuvio.tv.ui.screens.account
 
 import android.graphics.Bitmap
+import com.nuvio.tv.data.remote.panel.PanelPortalDto
 import com.nuvio.tv.data.remote.supabase.SupabaseLinkedDevice
 import com.nuvio.tv.domain.model.AuthState
 
@@ -44,6 +45,8 @@ data class AccountUiState(
     val connectedStats: AccountConnectedStats? = null,
     val syncOverview: SyncOverview? = null,
     val isSyncOverviewLoading: Boolean = false,
+    val availablePortals: List<PanelPortalDto> = emptyList(),
+    val isPortalLoading: Boolean = false,
     val qrLoginCode: String? = null,
     val qrLoginUrl: String? = null,
     val qrLoginNonce: String? = null,

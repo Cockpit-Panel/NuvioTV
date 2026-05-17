@@ -53,7 +53,7 @@ import com.nuvio.tv.R
 fun AccountSettingsContent(
     uiState: AccountUiState,
     viewModel: AccountViewModel,
-    onNavigateToAuthQrSignIn: () -> Unit = {}
+    onNavigateToAuthSignIn: () -> Unit = {}
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -85,29 +85,17 @@ fun AccountSettingsContent(
                 item(key = "account_sign_in_qr") {
                     SettingsActionButton(
                         icon = Icons.Default.VpnKey,
-                        title = stringResource(R.string.account_signin_qr_title),
-                        subtitle = stringResource(R.string.account_signin_qr_subtitle),
-                        onClick = onNavigateToAuthQrSignIn
+                        title = stringResource(R.string.auth_signin_title),
+                        subtitle = stringResource(R.string.account_signin_credentials_subtitle),
+                        onClick = onNavigateToAuthSignIn
                     )
                 }
             }
 
             is AuthState.FullAccount -> {
-                item(key = "account_status") {
-                    StatusCard(label = stringResource(R.string.account_signed_in_label), value = authState.email)
+                item(key = "account_sign_out") {
+                    SignOutSettingsButton(onClick = { viewModel.signOut(onComplete = onNavigateToAuthSignIn) })
                 }
-                item(key = "account_sync_note_signed_in") {
-                    AccountInlineNote(text = stringResource(R.string.account_sync_restart_note))
-                }
-
-                val overview = uiState.syncOverview
-                if (overview != null) {
-                    item(key = "account_sync_overview") { SyncOverviewCard(overview) }
-                } else if (uiState.isSyncOverviewLoading) {
-                    item(key = "account_sync_overview_loading") { SyncOverviewLoadingCard() }
-                }
-
-                item(key = "account_sign_out") { SignOutSettingsButton(onClick = { viewModel.signOut() }) }
             }
 
         }

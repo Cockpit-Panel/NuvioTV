@@ -39,6 +39,12 @@ class ProfileLockStateDataStore @Inject constructor(
         }
     }
 
+    suspend fun clear() {
+        dataStore.edit { prefs ->
+            prefs.remove(pinEnabledMapKey)
+        }
+    }
+
     private fun encode(map: Map<Int, Boolean>): String =
         map.entries.joinToString(separator = ",") { "${it.key}:${it.value}" }
 

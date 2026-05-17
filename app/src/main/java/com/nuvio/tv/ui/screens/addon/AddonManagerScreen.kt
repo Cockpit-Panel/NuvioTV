@@ -128,7 +128,6 @@ fun AddonManagerScreen(
         return
     }
     val isEssential = experienceMode == ExperienceMode.ESSENTIAL
-    val webConfigMode = viewModel.webConfigMode(experienceMode ?: ExperienceMode.ADVANCED)
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -142,16 +141,7 @@ fun AddonManagerScreen(
             addon.catalogs.any { catalog -> !catalog.isSearchOnlyCatalog() }
         }
     }
-    val manageFromPhoneSubtitle = if (webConfigMode == com.nuvio.tv.core.server.AddonWebConfigMode.COLLECTIONS_ONLY) {
-        stringResource(R.string.addon_manage_collections_from_phone_subtitle)
-    } else {
-        stringResource(R.string.addon_manage_from_phone_subtitle)
-    }
-    val qrInstruction = if (webConfigMode == com.nuvio.tv.core.server.AddonWebConfigMode.COLLECTIONS_ONLY) {
-        stringResource(R.string.addon_qr_collections_scan_instruction)
-    } else {
-        stringResource(R.string.addon_qr_scan_instruction)
-    }
+    val qrInstruction = stringResource(R.string.addon_qr_scan_instruction)
 
     val defaultRefreshAddonsSubtitle = stringResource(R.string.addon_refresh_default_subtitle)
     val refreshedAddonsSubtitle = stringResource(R.string.addon_refresh_done_subtitle)
@@ -161,7 +151,7 @@ fun AddonManagerScreen(
 
     LaunchedEffect(refreshAddonsSubtitle) {
         if (refreshAddonsSubtitle != defaultRefreshAddonsSubtitle) {
-            delay(5_000)
+            delay(3200)
             refreshAddonsSubtitle = defaultRefreshAddonsSubtitle
         }
     }
@@ -225,7 +215,7 @@ fun AddonManagerScreen(
         ) {
             item {
                 Text(
-                    text = stringResource(R.string.addon_title),
+                    text = if (showBuiltInHeader) stringResource(R.string.addon_title) else "",
                     style = MaterialTheme.typography.headlineMedium,
                     color = if (showBuiltInHeader) NuvioColors.TextPrimary else Color.Transparent
                 )
@@ -370,14 +360,6 @@ fun AddonManagerScreen(
                 }
 
             }
-
-            item {
-                ManageFromPhoneCard(
-                    subtitle = manageFromPhoneSubtitle,
-                    onClick = { viewModel.startQrMode(webConfigMode) }
-                )
-            }
-
             if (!viewModel.isReadOnly && !isEssential && hasHomeVisibleCatalogs) {
                 item {
                     CatalogOrderEntryCard(onClick = onNavigateToCatalogOrder)
@@ -436,7 +418,6 @@ fun AddonManagerScreen(
                         canMoveDown = index < uiState.installedAddons.lastIndex,
                         onMoveUp = { viewModel.moveAddonUp(addon.baseUrl) },
                         onMoveDown = { viewModel.moveAddonDown(addon.baseUrl) },
-                        onRemove = { viewModel.removeAddon(addon.baseUrl) },
                         isReadOnly = viewModel.isReadOnly,
                         showReorder = !isEssential
                     )
@@ -1167,7 +1148,6 @@ private fun AddonCard(
     canMoveDown: Boolean,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
-    onRemove: () -> Unit,
     isReadOnly: Boolean = false,
     showReorder: Boolean = true
 ) {
@@ -1207,7 +1187,6 @@ private fun AddonCard(
                 canMoveDown = canMoveDown,
                 onMoveUp = onMoveUp,
                 onMoveDown = onMoveDown,
-                onRemove = onRemove,
                 showReorder = showReorder
             )
         }
@@ -1223,7 +1202,6 @@ private fun AddonCardContent(
     canMoveDown: Boolean = false,
     onMoveUp: () -> Unit = {},
     onMoveDown: () -> Unit = {},
-    onRemove: () -> Unit = {},
     showReorder: Boolean = true
 ) {
     Column(modifier = Modifier.padding(20.dp)) {
@@ -1277,18 +1255,6 @@ private fun AddonCardContent(
                             Icon(imageVector = Icons.Default.ArrowDownward, contentDescription = stringResource(R.string.cd_move_down))
                         }
                     }
-                    Button(
-                        onClick = onRemove,
-                        colors = ButtonDefaults.colors(
-                            containerColor = NuvioColors.BackgroundCard,
-                            contentColor = NuvioColors.TextSecondary,
-                            focusedContainerColor = NuvioColors.FocusBackground,
-                            focusedContentColor = NuvioColors.Error
-                        ),
-                        shape = ButtonDefaults.shape(RoundedCornerShape(12.dp))
-                    ) {
-                        Text(text = stringResource(R.string.addon_remove))
-                    }
                 }
             }
         }
@@ -1301,14 +1267,6 @@ private fun AddonCardContent(
                 color = NuvioColors.TextSecondary
             )
         }
-
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = addon.baseUrl,
-            style = MaterialTheme.typography.bodySmall,
-            color = NuvioColors.TextTertiary
-        )
-
         Spacer(modifier = Modifier.height(8.dp))
         Text(
             text = stringResource(R.string.addon_catalogs_types, addon.catalogs.size, addon.rawTypes.joinToString()),

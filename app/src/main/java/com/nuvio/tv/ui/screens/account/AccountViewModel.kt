@@ -18,6 +18,10 @@ import com.nuvio.tv.core.sync.WatchProgressSyncService
 import com.nuvio.tv.core.sync.WatchedItemsSyncService
 import com.nuvio.tv.core.sync.ProfileSettingsSyncService
 import com.nuvio.tv.data.local.LibraryPreferences
+import com.nuvio.tv.data.local.AppOnboardingDataStore
+import com.nuvio.tv.data.local.ProfileDataStore
+import com.nuvio.tv.data.local.ProfileDataStoreFactory
+import com.nuvio.tv.data.local.ProfileLockStateDataStore
 import com.nuvio.tv.data.local.WatchedItemsPreferences
 import com.nuvio.tv.data.local.TraktAuthDataStore
 import com.nuvio.tv.data.local.WatchProgressPreferences
@@ -62,6 +66,10 @@ class AccountViewModel @Inject constructor(
     private val libraryPreferences: LibraryPreferences,
     private val watchedItemsPreferences: WatchedItemsPreferences,
     private val traktAuthDataStore: TraktAuthDataStore,
+    private val appOnboardingDataStore: AppOnboardingDataStore,
+    private val profileLockStateDataStore: ProfileLockStateDataStore,
+    private val profileDataStoreFactory: ProfileDataStoreFactory,
+    private val profileDataStore: ProfileDataStore,
     private val postgrest: Postgrest,
     private val profileManager: ProfileManager,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: Context
@@ -90,7 +98,9 @@ class AccountViewModel @Inject constructor(
                 updateEffectiveOwnerId(state)
                 if (state is AuthState.FullAccount) {
                     loadConnectedStats()
-                    loadSyncOverview()
+                    if (authManager.supportsFullCloudSync) {
+                        loadSyncOverview()
+                    }
                 }
             }
         }
@@ -143,6 +153,83 @@ class AccountViewModel @Inject constructor(
                     _uiState.update { it.copy(isLoading = false, error = userFriendlyError(e)) }
                 }
             )
+        }
+    }
+
+    fun signInToPanel(username: String, password: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null) }
+            val portals = fetchPanelPortalsForLogin().getOrElse { error ->
+                _uiState.update { it.copy(isLoading = false, error = userFriendlyError(error)) }
+                return@launch
+            }
+
+            if (portals.isEmpty()) {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        error = context.getString(R.string.account_error_portal_list_failed)
+                    )
+                }
+                return@launch
+            }
+
+            var lastFailure: Throwable? = null
+            for (portal in portals) {
+                val result = authManager.signInWithPanel(
+                    serverUrl = portal.url,
+                    username = username,
+                    password = password,
+                    deviceName = Build.MODEL
+                )
+                if (result.isSuccess) {
+                    pullRemoteData().onFailure { e ->
+                        Log.e("AccountViewModel", "signInToPanel: pullRemoteData failed, continuing signed-in flow", e)
+                    }
+                    loadConnectedStats()
+                    _uiState.update { it.copy(isLoading = false) }
+                    return@launch
+                }
+                lastFailure = result.exceptionOrNull()
+            }
+
+            _uiState.update {
+                it.copy(
+                    isLoading = false,
+                    error = userFriendlyError(lastFailure ?: IllegalStateException("Invalid login credentials"))
+                )
+            }
+        }
+    }
+
+    fun loadPanelPortals() {
+        viewModelScope.launch {
+            fetchPanelPortalsForLogin()
+        }
+    }
+
+    private suspend fun fetchPanelPortalsForLogin(): Result<List<com.nuvio.tv.data.remote.panel.PanelPortalDto>> {
+        if (!authManager.isPanelCloudConfigured()) {
+            return Result.failure(IllegalStateException("Panel cloud API URL is not configured"))
+        }
+
+        _uiState.update { it.copy(isPortalLoading = true, error = null) }
+        return authManager.getPanelPortals().map { portals ->
+            val candidates = portals.filter { it.url.isNotBlank() }
+            _uiState.update {
+                it.copy(
+                    isPortalLoading = false,
+                    availablePortals = candidates
+                )
+            }
+            candidates
+        }.onFailure { error ->
+            _uiState.update {
+                it.copy(
+                    isPortalLoading = false,
+                    error = userFriendlyError(error)
+                )
+            }
         }
     }
 
@@ -208,14 +295,51 @@ class AccountViewModel @Inject constructor(
         }
     }
 
-    fun signOut() {
+    fun signOut(onComplete: (() -> Unit)? = null) {
         viewModelScope.launch {
             authManager.signOut()
-            _uiState.update { it.copy(connectedStats = null, isStatsLoading = false) }
+            clearLocalSessionData()
+            _uiState.update {
+                it.copy(
+                    connectedStats = null,
+                    isStatsLoading = false,
+                    linkedDevices = emptyList(),
+                    availablePortals = emptyList(),
+                    syncOverview = null,
+                    effectiveOwnerId = null,
+                    generatedSyncCode = null,
+                    qrLoginCode = null,
+                    qrLoginUrl = null,
+                    qrLoginNonce = null,
+                    qrLoginBitmap = null,
+                    qrLoginStatus = null,
+                    qrLoginExpiresAtMillis = null,
+                    error = null
+                )
+            }
+            onComplete?.invoke()
         }
     }
 
+    private suspend fun clearLocalSessionData() {
+        qrLoginPollJob?.cancel()
+        qrLoginPollJob = null
+        authManager.clearEffectiveUserIdCache()
+        runCatching { addonRepository.clearLocalCache() }
+        runCatching { watchProgressRepository.clearAll() }
+        runCatching { watchedItemsPreferences.clearAll() }
+        runCatching { traktAuthDataStore.clearAuth() }
+        runCatching { profileLockStateDataStore.clear() }
+        runCatching { appOnboardingDataStore.reset() }
+        runCatching { profileDataStoreFactory.clearAll() }
+        runCatching { profileDataStore.reset() }
+    }
+
     fun loadLinkedDevices() {
+        if (!authManager.supportsFullCloudSync) {
+            _uiState.update { it.copy(linkedDevices = emptyList()) }
+            return
+        }
         viewModelScope.launch {
             syncRepository.getLinkedDevices().fold(
                 onSuccess = { devices ->
@@ -406,6 +530,10 @@ class AccountViewModel @Inject constructor(
     }
 
     fun loadSyncOverview() {
+        if (!authManager.supportsFullCloudSync) {
+            _uiState.update { it.copy(syncOverview = null, isSyncOverviewLoading = false) }
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(isSyncOverviewLoading = true) }
 
@@ -467,15 +595,14 @@ class AccountViewModel @Inject constructor(
             // PIN errors (from PG RAISE EXCEPTION or any wrapper)
             message.contains("incorrect pin") || message.contains("invalid pin") || message.contains("wrong pin") -> R.string.account_error_incorrect_pin
 
-            // Sync code errors
-            message.contains("expired") -> R.string.account_error_sync_code_expired
-            message.contains("invalid") && message.contains("code") -> R.string.account_error_invalid_sync_code
-            message.contains("not found") || message.contains("no sync code") -> R.string.account_error_sync_code_not_found
-            message.contains("already linked") -> R.string.account_error_device_already_linked
-            message.contains("empty response") -> R.string.account_error_generic_retry
-
             // Auth errors
             message.contains("invalid login credentials") -> R.string.account_error_invalid_credentials
+            message.contains("access denied") -> R.string.account_error_access_denied
+            message.contains("disabled") && (message.contains("line") || message.contains("user")) -> R.string.account_error_line_disabled
+            message.contains("expired") && (message.contains("line") || message.contains("account") || message.contains("subscription")) ->
+                R.string.account_error_line_expired
+            message.contains("panel cloud api url is not configured") -> R.string.account_error_panel_not_configured
+            message.contains("failed to load service list") || message.contains("empty portals response") -> R.string.account_error_portal_list_failed
             message.contains("email not confirmed") -> R.string.account_error_email_not_confirmed
             message.contains("user already registered") -> R.string.account_error_email_already_registered
             message.contains("invalid email") -> R.string.account_error_invalid_email
@@ -494,6 +621,13 @@ class AccountViewModel @Inject constructor(
                 R.string.account_error_qr_login_misconfigured
             message.contains("invalid device nonce") ->
                 R.string.account_error_qr_login_invalid_request
+
+            // Sync code errors
+            message.contains("sync") && message.contains("expired") -> R.string.account_error_sync_code_expired
+            message.contains("invalid") && message.contains("code") -> R.string.account_error_invalid_sync_code
+            message.contains("not found") || message.contains("no sync code") -> R.string.account_error_sync_code_not_found
+            message.contains("already linked") -> R.string.account_error_device_already_linked
+            message.contains("empty response") -> R.string.account_error_generic_retry
 
             // Network errors
             message.contains("unable to resolve host") || message.contains("no address associated") -> R.string.account_error_no_internet
@@ -580,6 +714,20 @@ class AccountViewModel @Inject constructor(
 
     private suspend fun pullRemoteData(): Result<Unit> {
         try {
+            if (!authManager.supportsFullCloudSync) {
+                addonRepository.isSyncingFromRemote = true
+                try {
+                    val remoteAddonUrls = addonSyncService.getRemoteAddonUrls().getOrElse { throw it }
+                    addonRepository.reconcileWithRemoteAddonUrls(
+                        remoteUrls = remoteAddonUrls,
+                        removeMissingLocal = true
+                    )
+                } finally {
+                    addonRepository.isSyncingFromRemote = false
+                }
+                return Result.success(Unit)
+            }
+
             profileSettingsSyncService.pullCurrentProfileFromRemote()
             pluginManager.isSyncingFromRemote = true
             val remotePlugins = pluginSyncService.getRemoteRepoUrls().getOrElse { throw it }

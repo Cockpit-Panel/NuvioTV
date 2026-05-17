@@ -202,7 +202,7 @@ fun SettingsScreen(
     showBuiltInHeader: Boolean = true,
     onNavigateToTrakt: () -> Unit = {},
     onNavigateToAddons: () -> Unit = {},
-    onNavigateToAuthQrSignIn: () -> Unit = {},
+    onNavigateToAuthSignIn: () -> Unit = {},
     onNavigateToManageProfiles: () -> Unit = {},
     onNavigateToSupportersContributors: () -> Unit = {},
     onNavigateToLicensesAttributions: () -> Unit = {},
@@ -238,7 +238,7 @@ fun SettingsScreen(
                 SettingsCategory.PROFILES -> isPrimaryProfileActive
                 SettingsCategory.ACCOUNT -> isPrimaryProfileActive
                 SettingsCategory.LAYOUT -> true
-                SettingsCategory.PLUGINS -> AppFeaturePolicy.pluginsEnabled && !isEssentialMode
+                SettingsCategory.PLUGINS -> false
                 SettingsCategory.INTEGRATION -> true
                 SettingsCategory.ADVANCED -> true
                 else -> true
@@ -373,7 +373,7 @@ fun SettingsScreen(
                                 onClick = {
                                     if (section.destination == SettingsSectionDestination.External) {
                                         when (section.category) {
-                                            SettingsCategory.ACCOUNT -> onNavigateToAuthQrSignIn()
+                                            SettingsCategory.ACCOUNT -> onNavigateToAuthSignIn()
                                             SettingsCategory.TRAKT -> onNavigateToTrakt()
                                             else -> Unit
                                         }
@@ -511,7 +511,7 @@ fun SettingsScreen(
                         )
                         SettingsCategory.PLUGINS -> if (AppFeaturePolicy.pluginsEnabled) PluginsSettingsContent()
                         SettingsCategory.ACCOUNT -> AccountSettingsInline(
-                            onNavigateToAuthQrSignIn = onNavigateToAuthQrSignIn
+                            onNavigateToAuthSignIn = onNavigateToAuthSignIn
                         )
                         SettingsCategory.DEBUG -> DebugSettingsContent()
                         SettingsCategory.TRAKT -> Unit
@@ -593,7 +593,7 @@ private fun EssentialAdvancedSettingsContent(
 
 @Composable
 private fun AccountSettingsInline(
-    onNavigateToAuthQrSignIn: () -> Unit
+    onNavigateToAuthSignIn: () -> Unit
 ) {
     val accountViewModel: com.nuvio.tv.ui.screens.account.AccountViewModel = hiltViewModel()
     val accountUiState by accountViewModel.uiState.collectAsStateWithLifecycle()
@@ -610,7 +610,7 @@ private fun AccountSettingsInline(
             com.nuvio.tv.ui.screens.account.AccountSettingsContent(
                 uiState = accountUiState,
                 viewModel = accountViewModel,
-                onNavigateToAuthQrSignIn = onNavigateToAuthQrSignIn
+                onNavigateToAuthSignIn = onNavigateToAuthSignIn
             )
         }
     }

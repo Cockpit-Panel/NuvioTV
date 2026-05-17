@@ -14,6 +14,7 @@ import com.nuvio.tv.data.remote.api.TrailerApi
 import com.nuvio.tv.data.remote.api.IntroDbApi
 import com.nuvio.tv.data.remote.api.ImdbTapframeApi
 import com.nuvio.tv.data.remote.api.MDBListApi
+import com.nuvio.tv.data.remote.api.PanelCloudApi
 import com.nuvio.tv.data.remote.api.ParentalGuideApi
 import com.nuvio.tv.data.remote.api.SeriesGraphApi
 import com.nuvio.tv.data.remote.api.SponsorsApi
@@ -203,6 +204,16 @@ object NetworkModule {
 
     @Provides
     @Singleton
+    @Named("panelCloud")
+    fun providePanelCloudRetrofit(okHttpClient: OkHttpClient, moshi: Moshi): Retrofit =
+        Retrofit.Builder()
+            .baseUrl(normalizedBaseUrl(BuildConfig.PANEL_CLOUD_API_URL, "https://localhost/"))
+            .client(okHttpClient)
+            .addConverterFactory(MoshiConverterFactory.create(moshi))
+            .build()
+
+    @Provides
+    @Singleton
     @Named("tmdb")
     fun provideTmdbRetrofit(okHttpClient: OkHttpClient, moshi: Moshi): Retrofit =
         Retrofit.Builder()
@@ -228,6 +239,11 @@ object NetworkModule {
     @Singleton
     fun provideAddonApi(retrofit: Retrofit): AddonApi =
         retrofit.create(AddonApi::class.java)
+
+    @Provides
+    @Singleton
+    fun providePanelCloudApi(@Named("panelCloud") retrofit: Retrofit): PanelCloudApi =
+        retrofit.create(PanelCloudApi::class.java)
 
     @Provides
     @Singleton

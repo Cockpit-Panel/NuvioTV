@@ -44,8 +44,14 @@ Download the latest APK from [GitHub Releases](https://github.com/Cockpit-Panel/
 ### Setup
 
 ```bash
-git clone https://github.com/tapframe/NuvioTV.git
+git clone https://github.com/Cockpit-Panel/NuvioTV.git
 cd NuvioTV
+```
+
+### Full Release Build
+
+```bash
+./gradlew :app:assembleFullRelease
 ```
 
 ### Full Debug Build

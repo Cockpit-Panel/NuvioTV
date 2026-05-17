@@ -219,6 +219,15 @@ class AddonRepositoryImpl @Inject constructor(
         triggerRemoteSync()
     }
 
+    suspend fun clearLocalCache() {
+        manifestCache.clear()
+        lastManifestRefreshTime = 0L
+        context.getSharedPreferences(MANIFEST_CACHE_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+    }
+
     override suspend fun setAddonOrder(urls: List<String>) {
         preferences.setAddonOrder(urls)
         triggerRemoteSync()

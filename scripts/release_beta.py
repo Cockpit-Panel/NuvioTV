@@ -14,17 +14,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_FILE = ROOT / "app" / "build.gradle.kts"
 RELEASE_OUTPUT_DIR = ROOT / "build" / "release"
-APK_DIR = ROOT / "app" / "build" / "outputs" / "apk" / "release"
+APK_DIR = ROOT / "app" / "build" / "outputs" / "apk" / "full" / "release"
 DEFAULT_BETA_NOTICE = (
     "## This is a beta version intended for testing only. Expect breaking changes "
     "in updates. Normal users are advised to wait for the stable release."
 )
+DEFAULT_RELEASE_ASSET_TOKENS = ["universal", "arm64-v8a", "armeabi-v7a"]
 EXPECTED_ASSET_NAMES = [
-    "app-arm64-v8a-release.apk",
-    "app-armeabi-v7a-release.apk",
-    "app-x86_64-release.apk",
-    "app-x86-release.apk",
-    "app-universal-release.apk",
+    "app-full-universal-release.apk",
+    "app-full-arm64-v8a-release.apk",
+    "app-full-armeabi-v7a-release.apk",
 ]
 VERSION_NAME_RE = re.compile(r'(?m)^(\s*versionName\s*=\s*")([^"]+)(")')
 VERSION_CODE_RE = re.compile(r"(?m)^(\s*versionCode\s*=\s*)(\d+)")
@@ -65,12 +64,22 @@ WORD_REPLACEMENTS = (
     (re.compile(r"\bnuvio\b", re.IGNORECASE), "Nuvio"),
 )
 ASSET_ORDER = {
-    "arm64-v8a": 0,
-    "armeabi-v7a": 1,
-    "x86_64": 2,
-    "x86": 3,
-    "universal": 4,
+    "universal": 0,
+    "arm64-v8a": 1,
+    "armeabi-v7a": 2,
+    "x86_64": 3,
+    "x86": 4,
 }
+
+
+def selected_release_asset_tokens() -> list[str]:
+    configured = os.environ.get("NUVIO_RELEASE_ASSETS", "")
+    tokens = [token.strip() for token in configured.split(",") if token.strip()]
+    return tokens or DEFAULT_RELEASE_ASSET_TOKENS
+
+
+def asset_matches(path: Path, tokens: list[str]) -> bool:
+    return any(token in path.name for token in tokens)
 
 
 def run(
@@ -331,13 +340,14 @@ def ensure_version_available(release_tag: str) -> None:
 
 def build_release() -> list[Path]:
     subprocess.run(
-        ["./gradlew", "app:assembleRelease"],
+        ["./gradlew", "app:assembleFullRelease"],
         cwd=ROOT,
         check=True,
         text=True,
     )
+    selected_tokens = selected_release_asset_tokens()
     assets = sorted(
-        APK_DIR.glob("*.apk"),
+        [path for path in APK_DIR.glob("*.apk") if asset_matches(path, selected_tokens)],
         key=lambda path: next(
             (order for token, order in ASSET_ORDER.items() if token in path.name),
             999,

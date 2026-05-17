@@ -87,6 +87,25 @@ class ProfileDataStoreFactory @Inject constructor(
         }
     }
 
+    suspend fun clearAll() {
+        deletedProfileIds.clear()
+        val scopedStores = synchronized(lock) {
+            cache.entries.toList().also { cache.clear() }
+        }
+        for ((_, scoped) in scopedStores) {
+            runCatching { scoped.store.edit { it.clear() } }
+            scoped.job.cancel()
+            scoped.job.join()
+        }
+
+        context.filesDir.listFiles()?.forEach { file ->
+            if (file.name.startsWith("plugin_code")) {
+                file.deleteRecursively()
+            }
+        }
+        corruptedFileNames.clear()
+    }
+
     fun isProfileDeleted(profileId: Int): Boolean = profileId in deletedProfileIds
 
     fun markProfileCreated(profileId: Int) {

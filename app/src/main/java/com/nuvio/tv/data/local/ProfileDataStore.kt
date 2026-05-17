@@ -103,6 +103,15 @@ class ProfileDataStore @Inject constructor(
         }
     }
 
+    suspend fun reset() {
+        dataStore.edit { prefs ->
+            prefs[profilesJsonKey] = serializeProfiles(listOf(defaultPrimaryProfile()))
+            prefs[activeProfileIdKey] = 1
+            prefs[hasEverSelectedProfileKey] = false
+            prefs[rememberLastProfileEnabledKey] = false
+        }
+    }
+
     private fun defaultPrimaryProfile() = UserProfile(
         id = 1,
         name = "Profile 1",

@@ -216,6 +216,21 @@ class StartupSyncService @Inject constructor(
             val profileId = profileManager.activeProfileId.value
             Log.d(TAG, "Pulling remote data for profile $profileId")
 
+            if (!authManager.supportsFullCloudSync) {
+                addonRepository.isSyncingFromRemote = true
+                try {
+                    val remoteAddonUrls = addonSyncService.getRemoteAddonUrls().getOrElse { throw it }
+                    addonRepository.reconcileWithRemoteAddonUrls(
+                        remoteUrls = remoteAddonUrls,
+                        removeMissingLocal = true
+                    )
+                    Log.d(TAG, "Pulled ${remoteAddonUrls.size} panel-managed addons for profile $profileId")
+                } finally {
+                    addonRepository.isSyncingFromRemote = false
+                }
+                return Result.success(Unit)
+            }
+
             // Pull profiles list first so profile selection stays up-to-date
             profileSyncService.pullFromRemote().getOrElse { throw it }
             Log.d(TAG, "Pulled profiles from remote")

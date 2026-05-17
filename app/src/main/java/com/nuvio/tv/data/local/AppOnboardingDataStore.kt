@@ -30,4 +30,8 @@ class AppOnboardingDataStore @Inject constructor(
             prefs[hasSeenAuthQrOnFirstLaunchKey] = value
         }
     }
+
+    suspend fun reset() {
+        setHasSeenAuthQrOnFirstLaunch(false)
+    }
 }
