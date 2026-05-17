@@ -15,12 +15,12 @@ The fork should keep all Cockpit-specific work on `dev` and treat `tapframe/Nuvi
 ### GitHub-first sync flow
 
 1. `upstream-sync.yml` runs on a schedule and can also be started manually from Actions.
-2. The workflow fetches `tapframe/NuvioTV`, merges `upstream/main` into a managed branch named `sync/upstream-main-to-dev`, and opens or updates a pull request into `dev`.
-3. Review that PR and merge it when it is clean.
-4. The merge into `dev` triggers `android-release-build.yml`, which rebuilds the app automatically.
+2. The workflow fetches `tapframe/NuvioTV` and merges `upstream/main` directly into `dev`.
+3. The merge uses `git merge -X ours`, which means any conflicting hunk automatically keeps the Cockpit fork's side of the file.
+4. Every successful sync push into `dev` triggers `android-release-build.yml`, which rebuilds the app automatically.
 5. When you want a distributable release, push a version tag from `dev`. The tag-triggered release workflow will build the APKs and publish a GitHub Release.
 
-This preserves the Cockpit branch history while making upstream intake and app builds happen through GitHub.
+This is the fully automatic path: upstream intake and app builds happen through GitHub without requiring a review PR. The tradeoff is that overlapping upstream edits are discarded on conflicting hunks so the Cockpit fork always wins those merges.
 
 ### Local fallback flow
 
@@ -58,7 +58,7 @@ git merge upstream/main
 
 ## CI notes
 
-- `upstream-sync.yml` creates or updates a PR that carries upstream changes into `dev`.
+- `upstream-sync.yml` merges upstream directly into `dev` and auto-resolves conflicting hunks in favor of the Cockpit branch.
 - `android-release-build.yml` verifies `:app:assembleFullRelease` on pushes, pull requests, manual dispatches, and release tags.
 - `beta-release.yml` is the publish flow and now reads the actual `full/release` APK outputs.
 - Pushing a tag such as `0.6.17-beta-cockpit` creates a GitHub prerelease automatically.

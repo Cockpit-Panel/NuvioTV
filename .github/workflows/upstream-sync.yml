@@ -11,14 +11,13 @@ on:
         default: main
         type: string
       target_branch:
-        description: Fork branch to update via pull request
+        description: Fork branch to update automatically
         required: true
         default: dev
         type: string
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
   group: upstream-sync-${{ github.event.inputs.target_branch || 'dev' }}
@@ -46,16 +45,13 @@ jobs:
             target_branch="$DEFAULT_TARGET_BRANCH"
           fi
 
-          sync_branch="sync/upstream-${upstream_ref}-to-${target_branch}"
-
           echo "UPSTREAM_REF=$upstream_ref" >> "$GITHUB_ENV"
           echo "TARGET_BRANCH=$target_branch" >> "$GITHUB_ENV"
-          echo "SYNC_BRANCH=$sync_branch" >> "$GITHUB_ENV"
 
       - name: Checkout target branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.DEFAULT_TARGET_BRANCH }}
+          ref: ${{ github.event.inputs.target_branch || 'dev' }}
           fetch-depth: 0
 
       - name: Configure git identity
@@ -69,18 +65,18 @@ jobs:
           git fetch origin "$TARGET_BRANCH"
           git fetch upstream "$UPSTREAM_REF"
 
-      - name: Merge upstream into sync branch
+      - name: Merge upstream into target branch
         id: merge
         shell: bash
         run: |
-          git checkout -B "$SYNC_BRANCH" "origin/$TARGET_BRANCH"
+          git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
 
-          if ! git merge --no-ff --no-edit "upstream/$UPSTREAM_REF"; then
+          if ! git merge -X ours --no-ff --no-edit "upstream/$UPSTREAM_REF"; then
             git merge --abort || true
             echo "merge_conflict=true" >> "$GITHUB_OUTPUT"
             echo "### Upstream sync conflict" >> "$GITHUB_STEP_SUMMARY"
-            echo "Automatic merge from upstream/$UPSTREAM_REF into $TARGET_BRANCH hit conflicts." >> "$GITHUB_STEP_SUMMARY"
-            echo "Resolve the conflict locally, then push the updated branch." >> "$GITHUB_STEP_SUMMARY"
+            echo "Automatic merge from upstream/$UPSTREAM_REF into $TARGET_BRANCH failed even with -X ours enabled." >> "$GITHUB_STEP_SUMMARY"
+            echo "Manual repair is required because git could not finish the merge strategy." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -91,30 +87,10 @@ jobs:
             exit 0
           fi
 
-      - name: Push sync branch
-        if: steps.merge.outputs.no_changes != 'true'
-        run: |
-          git push --force-with-lease origin "$SYNC_BRANCH"
-
-      - name: Create or reuse sync pull request
-        if: steps.merge.outputs.no_changes != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          existing_pr="$(gh pr list --head "$SYNC_BRANCH" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number')"
-
-          if [ -n "$existing_pr" ] && [ "$existing_pr" != "null" ]; then
-            echo "### Upstream sync" >> "$GITHUB_STEP_SUMMARY"
-            echo "Updated existing PR #$existing_pr from $SYNC_BRANCH into $TARGET_BRANCH." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          gh pr create \
-            --base "$TARGET_BRANCH" \
-            --head "$SYNC_BRANCH" \
-            --title "sync: merge upstream/$UPSTREAM_REF into $TARGET_BRANCH" \
-            --body "Automated upstream sync PR from upstream/$UPSTREAM_REF into $TARGET_BRANCH. Merge after CI passes to keep Cockpit changes on top of upstream."
-
           echo "### Upstream sync" >> "$GITHUB_STEP_SUMMARY"
-          echo "Created a new pull request from $SYNC_BRANCH into $TARGET_BRANCH." >> "$GITHUB_STEP_SUMMARY"
+          echo "Merged upstream/$UPSTREAM_REF into $TARGET_BRANCH with -X ours, so conflicting hunks stay on the Cockpit branch automatically." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push updated target branch
+        if: steps.merge.outputs.no_changes != 'true'
+        run: |
+          git push origin "$TARGET_BRANCH"
