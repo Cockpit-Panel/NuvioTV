@@ -7,6 +7,7 @@ import com.nuvio.tv.data.remote.api.AddonApi
 import com.nuvio.tv.data.remote.api.AniSkipApi
 import com.nuvio.tv.data.remote.api.AnimeSkipApi
 import com.nuvio.tv.data.remote.api.ArmApi
+import com.nuvio.tv.data.remote.api.DirectDebridStreamApi
 import com.nuvio.tv.data.remote.api.DonationsApi
 import com.nuvio.tv.data.remote.api.GitHubReleaseApi
 import com.nuvio.tv.data.remote.api.TraktApi
@@ -16,9 +17,11 @@ import com.nuvio.tv.data.remote.api.ImdbTapframeApi
 import com.nuvio.tv.data.remote.api.MDBListApi
 import com.nuvio.tv.data.remote.api.PanelCloudApi
 import com.nuvio.tv.data.remote.api.ParentalGuideApi
+import com.nuvio.tv.data.remote.api.RealDebridApi
 import com.nuvio.tv.data.remote.api.SeriesGraphApi
 import com.nuvio.tv.data.remote.api.SponsorsApi
 import com.nuvio.tv.data.remote.api.TmdbApi
+import com.nuvio.tv.data.remote.api.TorboxApi
 import com.nuvio.tv.data.remote.api.UniqueContributionsApi
 import com.nuvio.tv.LocaleCache
 import com.squareup.moshi.Moshi
@@ -131,6 +134,24 @@ object NetworkModule {
             })
             .build()
     }
+
+    @Provides
+    @Singleton
+    @Named("directDebrid")
+    fun provideDirectDebridOkHttpClient(): OkHttpClient =
+        OkHttpClient.Builder()
+            .dns(IPv4FirstDns())
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val version = BuildConfig.VERSION_NAME.ifBlank { "dev" }
+                val request = chain.request().newBuilder()
+                    .header("User-Agent", "Nuvio/$version")
+                    .header("Accept-Language", buildAcceptLanguageHeader())
+                    .build()
+                chain.proceed(request)
+            }
+            .build()
 
     @Provides
     @Singleton
