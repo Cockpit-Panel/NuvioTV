@@ -704,10 +704,11 @@ class AccountViewModel @Inject constructor(
     }
 
     private suspend fun pushLocalDataToRemote() {
+        val profileId = profileManager.activeProfileId.value
         profileSettingsSyncService.pushCurrentProfileToRemote()
         pluginSyncService.pushToRemote()
         addonSyncService.pushToRemote()
-        watchProgressSyncService.pushToRemote()
+        watchProgressSyncService.pushToRemote(profileId)
         librarySyncService.pushToRemote()
         watchedItemsSyncService.pushToRemote()
     }
@@ -754,11 +755,12 @@ class AccountViewModel @Inject constructor(
             )
             if (!isTraktConnected) {
                 watchProgressRepository.isSyncingFromRemote = true
-                val remoteEntries = watchProgressSyncService.pullFromRemote().getOrElse { throw it }
+                val remoteEntries = watchProgressSyncService.pullFromRemote(profileId).getOrElse { throw it }
                 Log.d("AccountViewModel", "pullRemoteData: pulled ${remoteEntries.size} watch progress entries")
                 watchProgressPreferences.mergeRemoteEntries(
                     remoteEntries.toMap(),
-                    lastSuccessfulPushMs = watchProgressSyncService.lastSuccessfulPushMs
+                    lastSuccessfulPushMs = watchProgressSyncService.lastSuccessfulPushMs,
+                    profileId = profileId
                 )
                 Log.d("AccountViewModel", "pullRemoteData: reconciled local watch progress with ${remoteEntries.size} remote entries")
                 watchProgressRepository.isSyncingFromRemote = false
@@ -782,11 +784,12 @@ class AccountViewModel @Inject constructor(
                 Log.d("AccountViewModel", "pullRemoteData: reconciled local watched items with ${remoteWatchedItems.size} remote items")
             } else if (shouldUseSupabaseWatchProgressSync) {
                 watchProgressRepository.isSyncingFromRemote = true
-                val remoteEntries = watchProgressSyncService.pullFromRemote().getOrElse { throw it }
+                val remoteEntries = watchProgressSyncService.pullFromRemote(profileId).getOrElse { throw it }
                 Log.d("AccountViewModel", "pullRemoteData: pulled ${remoteEntries.size} watch progress entries in Trakt mode")
                 watchProgressPreferences.mergeRemoteEntries(
                     remoteEntries.toMap(),
-                    lastSuccessfulPushMs = watchProgressSyncService.lastSuccessfulPushMs
+                    lastSuccessfulPushMs = watchProgressSyncService.lastSuccessfulPushMs,
+                    profileId = profileId
                 )
                 Log.d("AccountViewModel", "pullRemoteData: merged local watch progress with ${remoteEntries.size} remote entries")
                 watchProgressRepository.isSyncingFromRemote = false
