@@ -71,16 +71,16 @@ jobs:
         run: |
           git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
 
-          if ! git merge -X ours --no-ff --no-edit "upstream/$UPSTREAM_REF"; then
+          if ! git merge --no-ff --no-edit "upstream/$UPSTREAM_REF"; then
             git merge --abort || true
             echo "merge_conflict=true" >> "$GITHUB_OUTPUT"
             echo "### Upstream sync conflict" >> "$GITHUB_STEP_SUMMARY"
-            echo "Automatic merge from upstream/$UPSTREAM_REF into $TARGET_BRANCH failed even with -X ours enabled." >> "$GITHUB_STEP_SUMMARY"
-            echo "Manual repair is required because git could not finish the merge strategy." >> "$GITHUB_STEP_SUMMARY"
+            echo "Automatic merge from upstream/$UPSTREAM_REF into $TARGET_BRANCH failed." >> "$GITHUB_STEP_SUMMARY"
+            echo "Manual repair is required; this workflow intentionally does not use -X ours because that can silently discard upstream changes." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
-          if git diff --quiet "origin/$TARGET_BRANCH"...HEAD; then
+          if git diff --quiet "origin/$TARGET_BRANCH"..HEAD; then
             echo "no_changes=true" >> "$GITHUB_OUTPUT"
             echo "### Upstream sync" >> "$GITHUB_STEP_SUMMARY"
             echo "No upstream changes to merge from upstream/$UPSTREAM_REF into $TARGET_BRANCH." >> "$GITHUB_STEP_SUMMARY"
@@ -88,9 +88,41 @@ jobs:
           fi
 
           echo "### Upstream sync" >> "$GITHUB_STEP_SUMMARY"
-          echo "Merged upstream/$UPSTREAM_REF into $TARGET_BRANCH with -X ours, so conflicting hunks stay on the Cockpit branch automatically." >> "$GITHUB_STEP_SUMMARY"
+          echo "Merged upstream/$UPSTREAM_REF into $TARGET_BRANCH without automatic conflict preference." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Java
+        if: steps.merge.outputs.no_changes != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        if: steps.merge.outputs.no_changes != 'true'
+        uses: android-actions/setup-android@v3
+
+      - name: Verify Cockpit config survived merge
+        if: steps.merge.outputs.no_changes != 'true'
+        shell: bash
+        run: |
+          grep -q 'https://demo.cockpit.lol/api/nuvio/' app/build.gradle.kts
+          grep -q '38208ec0916665e6989a1163bb362859' app/build.gradle.kts
+          grep -q 'ce5722a7f71c099301473e10cc6a229754bc4ae71bb34fa143e056e1041e8a27' app/build.gradle.kts
+          grep -q '3ad7e96c7376ea6b259c580336b49e220cf25074f7fbe636da70c3bb510f5bab' app/build.gradle.kts
+          grep -q 'validateCockpitReleaseConfig' app/build.gradle.kts
+
+      - name: Verify debug Kotlin compile
+        if: steps.merge.outputs.no_changes != 'true'
+        run: ./gradlew :app:compileFullDebugKotlin
+
+      - name: Verify full release assembles
+        if: steps.merge.outputs.no_changes != 'true'
+        env:
+          CI_USE_DEBUG_SIGNING: "true"
+        run: ./gradlew :app:assembleFullRelease
 
       - name: Push updated target branch
         if: steps.merge.outputs.no_changes != 'true'
         run: |
-          git push origin "$TARGET_BRANCH"
+          git push origin "HEAD:$TARGET_BRANCH"

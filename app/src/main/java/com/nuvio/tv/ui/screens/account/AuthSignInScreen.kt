@@ -2,6 +2,8 @@
 
 package com.nuvio.tv.ui.screens.account
 
+import com.nuvio.tv.ui.theme.NuvioTheme
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -94,14 +96,14 @@ fun AuthSignInScreen(
             Text(
                 text = stringResource(R.string.auth_signin_title),
                 style = MaterialTheme.typography.headlineSmall,
-                color = NuvioColors.TextPrimary,
+                color = NuvioTheme.colors.TextPrimary,
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(modifier = Modifier.height(10.dp))
             Text(
                 text = stringResource(R.string.auth_signin_panel_subtitle),
                 style = MaterialTheme.typography.bodyMedium,
-                color = NuvioColors.TextSecondary,
+                color = NuvioTheme.colors.TextSecondary,
                 textAlign = TextAlign.Center
             )
             Spacer(modifier = Modifier.height(18.dp))
@@ -152,10 +154,10 @@ fun AuthSignInScreen(
                 },
                 enabled = username.isNotBlank() && password.isNotBlank() && !uiState.isLoading,
                 colors = ButtonDefaults.colors(
-                    containerColor = NuvioColors.Secondary,
-                    focusedContainerColor = NuvioColors.SecondaryVariant,
-                    contentColor = NuvioColors.OnSecondary,
-                    focusedContentColor = NuvioColors.OnSecondaryVariant
+                    containerColor = NuvioTheme.colors.Secondary,
+                    focusedContainerColor = NuvioTheme.colors.SecondaryVariant,
+                    contentColor = NuvioTheme.colors.OnSecondary,
+                    focusedContentColor = NuvioTheme.colors.OnSecondaryVariant
                 ),
                 shape = ButtonDefaults.shape(RoundedCornerShape(50)),
                 modifier = Modifier.fillMaxWidth()

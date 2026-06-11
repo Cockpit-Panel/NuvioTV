@@ -3,6 +3,7 @@ package com.nuvio.tv.data.remote.api
 import com.nuvio.tv.data.remote.panel.PanelAddonListResponse
 import com.nuvio.tv.data.remote.panel.PanelLoginRequest
 import com.nuvio.tv.data.remote.panel.PanelLoginResponse
+import com.nuvio.tv.data.remote.panel.PanelPluginListResponse
 import com.nuvio.tv.data.remote.panel.PanelPortalListResponse
 import retrofit2.Response
 import retrofit2.http.Body
@@ -23,4 +24,10 @@ interface PanelCloudApi {
         @Header("Authorization") authorization: String,
         @Query("profile_id") profileId: Int
     ): Response<PanelAddonListResponse>
+
+    @GET("api/plugins")
+    suspend fun getPlugins(
+        @Header("Authorization") authorization: String,
+        @Query("profile_id") profileId: Int
+    ): Response<PanelPluginListResponse>
 }

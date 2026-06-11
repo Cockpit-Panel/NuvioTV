@@ -2,11 +2,8 @@
 
 package com.nuvio.tv.ui.screens.account
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
+import com.nuvio.tv.ui.theme.NuvioTheme
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -37,7 +34,6 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
-import com.nuvio.tv.ui.theme.NuvioColors
 
 @Composable
 internal fun InputField(
@@ -52,26 +48,6 @@ internal fun InputField(
     val textFieldFocusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
     var isEditing by remember { mutableStateOf(false) }
-    var isSurfaceFocused by remember { mutableStateOf(false) }
-    val tickerAlpha by rememberInfiniteTransition(label = "inputTicker").animateFloat(
-        initialValue = 0.45f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 850),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "inputTickerAlpha"
-    )
-    val activeBorderColor = when {
-        isEditing -> NuvioColors.Secondary.copy(alpha = tickerAlpha)
-        isSurfaceFocused -> NuvioColors.FocusRing.copy(alpha = 0.85f)
-        else -> NuvioColors.Border
-    }
-    val containerColor = when {
-        isEditing -> NuvioColors.BackgroundElevated.copy(alpha = 0.96f)
-        isSurfaceFocused -> NuvioColors.BackgroundCard.copy(alpha = 0.98f)
-        else -> NuvioColors.BackgroundCard
-    }
 
     LaunchedEffect(isEditing) {
         if (isEditing) {
@@ -81,27 +57,22 @@ internal fun InputField(
     }
 
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .onFocusChanged { focusState ->
-                isSurfaceFocused = focusState.isFocused || focusState.hasFocus
-            },
         onClick = { isEditing = true },
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = containerColor,
-            focusedContainerColor = containerColor
+            containerColor = NuvioTheme.colors.BackgroundCard,
+            focusedContainerColor = NuvioTheme.colors.BackgroundCard
         ),
         border = ClickableSurfaceDefaults.border(
             border = Border(
-                border = BorderStroke(if (isEditing || isSurfaceFocused) 2.dp else 1.dp, activeBorderColor),
-                shape = RoundedCornerShape(12.dp)
+                border = BorderStroke(NuvioTheme.spacing.hairline, NuvioTheme.colors.Border),
+                shape = RoundedCornerShape(NuvioTheme.radii.md)
             ),
             focusedBorder = Border(
-                border = BorderStroke(2.dp, activeBorderColor),
-                shape = RoundedCornerShape(12.dp)
+                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                shape = RoundedCornerShape(NuvioTheme.radii.md)
             )
         ),
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(NuvioTheme.radii.md)),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
     ) {
         BasicTextField(
@@ -109,7 +80,7 @@ internal fun InputField(
             onValueChange = onValueChange,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp)
+                .padding(horizontal = NuvioTheme.spacing.lg, vertical = 14.dp)
                 .focusRequester(textFieldFocusRequester)
                 .onFocusChanged {
                     if (!it.isFocused && isEditing) {
@@ -135,16 +106,16 @@ internal fun InputField(
                 }
             ),
             textStyle = MaterialTheme.typography.bodyMedium.copy(
-                color = NuvioColors.TextPrimary
+                color = NuvioTheme.colors.TextPrimary
             ),
-            cursorBrush = SolidColor(if (isEditing) NuvioColors.Secondary.copy(alpha = tickerAlpha) else Color.Transparent),
+            cursorBrush = SolidColor(if (isEditing) NuvioTheme.colors.Secondary else Color.Transparent),
             visualTransformation = if (isPassword) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
             decorationBox = { innerTextField ->
                 if (value.isEmpty()) {
                     Text(
                         text = placeholder,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = NuvioColors.TextTertiary
+                        color = NuvioTheme.colors.TextTertiary
                     )
                 }
                 innerTextField()

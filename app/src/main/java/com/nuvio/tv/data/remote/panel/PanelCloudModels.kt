@@ -39,6 +39,11 @@ data class PanelAddonListResponse(
 )
 
 @JsonClass(generateAdapter = true)
+data class PanelPluginListResponse(
+    val plugins: List<PanelPluginDto> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
 data class PanelPortalListResponse(
     val portals: List<PanelPortalDto> = emptyList()
 )
@@ -57,4 +62,14 @@ data class PanelAddonDto(
     val enabled: Boolean = true,
     @Json(name = "sort_order") val sortOrder: Int = 0,
     @Json(name = "profile_id") val profileId: Int = 1
+)
+
+@JsonClass(generateAdapter = true)
+data class PanelPluginDto(
+    val url: String,
+    val name: String? = null,
+    val enabled: Boolean = true,
+    @Json(name = "sort_order") val sortOrder: Int = 0,
+    @Json(name = "profile_id") val profileId: Int = 1,
+    @Json(name = "repo_type") val repoType: String? = null
 )

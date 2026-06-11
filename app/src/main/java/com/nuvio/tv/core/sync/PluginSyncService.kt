@@ -4,6 +4,7 @@ import android.util.Log
 import com.nuvio.tv.core.auth.AuthManager
 import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.data.local.PluginDataStore
+import com.nuvio.tv.data.remote.api.PanelCloudApi
 import com.nuvio.tv.data.remote.supabase.SupabasePlugin
 import com.nuvio.tv.domain.model.RemotePluginInfo
 import io.github.jan.supabase.postgrest.Postgrest
@@ -24,7 +25,8 @@ class PluginSyncService @Inject constructor(
     private val postgrest: Postgrest,
     private val authManager: AuthManager,
     private val pluginDataStore: PluginDataStore,
-    private val profileManager: ProfileManager
+    private val profileManager: ProfileManager,
+    private val panelCloudApi: PanelCloudApi
 ) {
     private suspend fun <T> withJwtRefreshRetry(block: suspend () -> T): T {
         return try {
@@ -41,6 +43,10 @@ class PluginSyncService @Inject constructor(
      */
     suspend fun pushToRemote(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            if (!authManager.supportsFullCloudSync) {
+                return@withContext Result.success(Unit)
+            }
+
             val activeProfile = profileManager.activeProfile
             val profileId = profileManager.activeProfileId.value
             Log.d(TAG, "pushToRemote: activeProfile=${activeProfile?.id} isPrimary=${activeProfile?.isPrimary} usesPrimaryPlugins=${activeProfile?.usesPrimaryPlugins} profileId=$profileId")
@@ -82,6 +88,34 @@ class PluginSyncService @Inject constructor(
 
     suspend fun getRemoteRepoUrls(): Result<List<RemotePluginInfo>> = withContext(Dispatchers.IO) {
         try {
+            if (!authManager.supportsFullCloudSync) {
+                val token = authManager.getAccessToken()
+                    ?: return@withContext Result.failure(IllegalStateException("Not authenticated"))
+
+                val activeProfile = profileManager.activeProfile
+                val profileId = if (activeProfile != null && !activeProfile.isPrimary && activeProfile.usesPrimaryPlugins) 1
+                else profileManager.activeProfileId.value
+
+                val response = panelCloudApi.getPlugins(
+                    authorization = "Bearer $token",
+                    profileId = profileId
+                )
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(
+                        IllegalStateException(response.errorBody()?.string().orEmpty().ifBlank { "Failed to load panel plugins" })
+                    )
+                }
+
+                val body = response.body()
+                    ?: return@withContext Result.failure(Exception("Empty panel plugin response"))
+                val remotePlugins = body.plugins
+                    .filter { it.enabled && it.profileId == profileId }
+                    .sortedBy { it.sortOrder }
+                    .map { RemotePluginInfo(url = it.url, repoType = it.repoType) }
+
+                return@withContext Result.success(remotePlugins)
+            }
+
             val effectiveUserId = authManager.getEffectiveUserId(fallbackToOwnIdOnFailure = false)
                 ?: return@withContext Result.failure(
                     IllegalStateException("Unable to resolve sync owner for plugin sync")
