@@ -112,10 +112,19 @@ jobs:
             *-beta*|*-rc*) prerelease_args+=(--prerelease) ;;
           esac
 
-          gh release create "$RELEASE_TAG" \
-            "$RELEASE_APK" \
-            app/build/outputs/apk/full/release/app-full-arm64-v8a-release.apk \
-            app/build/outputs/apk/full/release/app-full-armeabi-v7a-release.apk \
-            --title "$RELEASE_TAG" \
-            --generate-notes \
-            "${prerelease_args[@]}"
+          release_assets=(
+            "$RELEASE_APK"
+            app/build/outputs/apk/full/release/app-full-arm64-v8a-release.apk
+            app/build/outputs/apk/full/release/app-full-armeabi-v7a-release.apk
+          )
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" "${prerelease_args[@]}"
+            gh release upload "$RELEASE_TAG" "${release_assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              "${release_assets[@]}" \
+              --title "$RELEASE_TAG" \
+              --generate-notes \
+              "${prerelease_args[@]}"
+          fi
