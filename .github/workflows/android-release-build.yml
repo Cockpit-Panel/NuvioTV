@@ -95,36 +95,44 @@ jobs:
           name: full-release-apks
           path: |
             ${{ env.RELEASE_APK }}
-            app/build/outputs/apk/full/release/app-full-universal-release.apk
-            app/build/outputs/apk/full/release/app-full-arm64-v8a-release.apk
-            app/build/outputs/apk/full/release/app-full-armeabi-v7a-release.apk
+            app/build/outputs/apk/full/release/*.apk
             app/build/outputs/apk/full/release/output-metadata.json
             app/build/outputs/mapping/fullRelease/mapping.txt
 
-      - name: Publish GitHub release for tag
-        if: ${{ github.ref_type == 'tag' }}
+      - name: Publish GitHub release
+        if: ${{ github.event_name == 'push' && (github.ref_type == 'tag' || github.ref == 'refs/heads/dev') }}
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          version_name="$(grep -m1 'versionName = ' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')"
           prerelease_args=()
-          case "$RELEASE_TAG" in
-            *-beta*|*-rc*) prerelease_args+=(--prerelease) ;;
-          esac
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            release_tag="$GITHUB_REF_NAME"
+            case "$release_tag" in
+              *-beta*|*-rc*) prerelease_args+=(--prerelease) ;;
+            esac
+          else
+            release_tag="cockpit-${version_name}.${GITHUB_RUN_NUMBER}"
+            prerelease_args+=(--prerelease)
+          fi
 
           release_assets=(
             "$RELEASE_APK"
             app/build/outputs/apk/full/release/app-full-arm64-v8a-release.apk
             app/build/outputs/apk/full/release/app-full-armeabi-v7a-release.apk
+            app/build/outputs/apk/full/release/app-full-x86_64-release.apk
+            app/build/outputs/apk/full/release/app-full-x86-release.apk
           )
 
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" "${prerelease_args[@]}"
-            gh release upload "$RELEASE_TAG" "${release_assets[@]}" --clobber
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            gh release edit "$release_tag" --title "$release_tag" "${prerelease_args[@]}"
+            gh release upload "$release_tag" "${release_assets[@]}" --clobber
           else
-            gh release create "$RELEASE_TAG" \
+            gh release create "$release_tag" \
               "${release_assets[@]}" \
-              --title "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "$release_tag" \
               --generate-notes \
               "${prerelease_args[@]}"
           fi
