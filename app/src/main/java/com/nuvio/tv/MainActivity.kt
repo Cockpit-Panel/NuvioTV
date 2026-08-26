@@ -155,7 +155,7 @@ import com.nuvio.tv.ui.components.ProfileAvatarCircle
 import com.nuvio.tv.ui.navigation.NuvioNavHost
 import com.nuvio.tv.ui.navigation.Screen
 import com.nuvio.tv.ui.membership.LocalMemberAccess
-import com.nuvio.tv.ui.screens.account.AuthQrSignInScreen
+import com.nuvio.tv.ui.screens.account.AuthSignInScreen
 import com.nuvio.tv.ui.screens.addon.EssentialAddonSetupScreen
 import com.nuvio.tv.ui.screens.profile.ProfileSelectionScreen
 import com.nuvio.tv.ui.theme.NuvioComponents
@@ -558,12 +558,12 @@ class MainActivity : ComponentActivity() {
                         authState !is AuthState.FullAccount &&
                         !onboardingCompletedThisSession
                     ) {
-                        AuthQrSignInScreen(
+                        AuthSignInScreen(
                             onBackPress = { finish() },
-                            onContinue = {
+                            onSuccess = {
                                 lifecycleScope.launch {
                                     val shouldRunRemoteOnboardingSync =
-                                        authManager.authState.value is AuthState.FullAccount
+                                        authManager.authState.value is AuthState.FullAccount && authManager.supportsFullCloudSync
 
                                     if (shouldRunRemoteOnboardingSync) {
                                         if (onboardingProfileSyncInProgress) return@launch
