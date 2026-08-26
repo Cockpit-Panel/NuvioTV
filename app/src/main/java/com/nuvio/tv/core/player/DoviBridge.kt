@@ -198,6 +198,105 @@ object DoviBridge {
         return converted
     }
 
+    // Reusable output buffer for the non-allocating path. Sized for typical RPU NALs; grows on
+    // demand if the native side reports a larger required size (see negative-return contract
+    // in [convertDv7RpuToDv81NonAllocating]). Read by the transformer on the same thread that made
+    // the call, immediately after it returns.
+    @JvmField
+    @Volatile
+    var rpuOutBuffer = ByteArray(4096)
+
+    /**
+     * Converts a DV7 RPU NAL to DV8.1 into [rpuOutBuffer] with no per-call JVM allocation.
+     *
+     * Returns the number of bytes written (> 0) on success, or 0 on failure. If the native
+     * output does not fit in [rpuOutBuffer], the native layer returns the negative required
+     * size; we grow the buffer to that size and retry exactly once instead of truncating.
+     */
+    fun convertDv7RpuToDv81NonAllocating(
+        sample: ByteArray,
+        offset: Int,
+        len: Int,
+        mode: Int = 1
+    ): Int {
+        if (!isAvailable() || len <= 0) return 0
+        conversionCallCount.incrementAndGet()
+        var written = runCatching {
+            nativeConvertDv7RpuToDv81NonAllocating(sample, offset, len, rpuOutBuffer, mode)
+        }.onFailure { Log.w(TAG, "Non-allocating conversion failed: ${it.message}") }
+            .getOrDefault(0)
+        if (written < 0) {
+            // Output didn't fit: grow the reusable buffer to the required size and retry once.
+            val required = -written
+            rpuOutBuffer = ByteArray(maxOf(required, rpuOutBuffer.size * 2))
+            written = runCatching {
+                nativeConvertDv7RpuToDv81NonAllocating(sample, offset, len, rpuOutBuffer, mode)
+            }.onFailure { Log.w(TAG, "Non-allocating retry failed: ${it.message}") }
+                .getOrDefault(0)
+        }
+        if (written > 0) {
+            conversionSuccessCount.incrementAndGet()
+        }
+        return written
+    }
+
+    /**
+     * Processes an HEVC video sample in native C++ layer.
+     * Optionally converts or strips Dolby Vision RPUs, and strips HDR10+ SEIs.
+     * Returns the size of the rewritten sample, or 0 if no changes were made.
+     * If the output buffer was too small, grows the buffer and retries once.
+     */
+    fun processVideoSampleNonAllocating(
+        sample: ByteArray,
+        sampleLen: Int,
+        nalFormat: Int, // 0 for Annex-B, 1 for Length-Delimited
+        nalLengthFieldLength: Int,
+        convertDovi: Boolean,
+        doviMode: Int,
+        doviProfile: Int,
+        stripDoviRpu: Boolean,
+        stripHdr10Plus: Boolean
+    ): Int {
+        if (!isAvailable() || sampleLen <= 0) return 0
+
+        var written = runCatching {
+            nativeProcessVideoSample(
+                sample = sample,
+                sampleLen = sampleLen,
+                nalFormat = nalFormat,
+                nalLengthFieldLength = nalLengthFieldLength,
+                outBuffer = rpuOutBuffer,
+                convertDovi = convertDovi,
+                doviMode = doviMode,
+                doviProfile = doviProfile,
+                stripDoviRpu = stripDoviRpu,
+                stripHdr10Plus = stripHdr10Plus
+            )
+        }.onFailure { Log.w(TAG, "nativeProcessVideoSample failed: ${it.message}") }
+            .getOrDefault(0)
+
+        if (written < 0) {
+            val required = -written
+            rpuOutBuffer = ByteArray(maxOf(required, rpuOutBuffer.size * 2))
+            written = runCatching {
+                nativeProcessVideoSample(
+                    sample = sample,
+                    sampleLen = sampleLen,
+                    nalFormat = nalFormat,
+                    nalLengthFieldLength = nalLengthFieldLength,
+                    outBuffer = rpuOutBuffer,
+                    convertDovi = convertDovi,
+                    doviMode = doviMode,
+                    doviProfile = doviProfile,
+                    stripDoviRpu = stripDoviRpu,
+                    stripHdr10Plus = stripHdr10Plus
+                )
+            }.onFailure { Log.w(TAG, "nativeProcessVideoSample retry failed: ${it.message}") }
+                .getOrDefault(0)
+        }
+        return written
+    }
+
     private fun loadNativeLibrary(): Boolean {
         if (!isNativeEnabledInBuild) {
             return false
@@ -224,4 +323,28 @@ object DoviBridge {
 
     @JvmStatic
     private external fun nativeConvertDv7RpuToDv81(payload: ByteArray, mode: Int): ByteArray?
+
+    @JvmStatic
+    private external fun nativeConvertDv7RpuToDv81NonAllocating(
+        sample: ByteArray,
+        offset: Int,
+        len: Int,
+        outBuffer: ByteArray,
+        mode: Int
+    ): Int
+
+    @JvmStatic
+    private external fun nativeProcessVideoSample(
+        sample: ByteArray,
+        sampleLen: Int,
+        nalFormat: Int,
+        nalLengthFieldLength: Int,
+        outBuffer: ByteArray,
+        convertDovi: Boolean,
+        doviMode: Int,
+        doviProfile: Int,
+        stripDoviRpu: Boolean,
+        stripHdr10Plus: Boolean
+    ): Int
 }
+

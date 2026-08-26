@@ -21,6 +21,13 @@ enum class PlayerExitReason {
     StillWatchingPrompt
 }
 
+enum class PlaybackIssueReportStatus {
+    Idle,
+    Sending,
+    Sent,
+    Failed
+}
+
 sealed interface PostPlayMode {
     val nextEpisode: NextEpisodeInfo
 
@@ -61,6 +68,9 @@ data class PlayerUiState(
     val contentType: String? = null,
     val currentStreamName: String? = null, // Name of the current stream source
     val currentStreamUrl: String? = null,
+    val currentStreamInfoHash: String? = null, // InfoHash of the currently playing stream (for debrid matching)
+    val currentStreamFileIdx: Int? = null, // FileIdx of the currently playing stream (for debrid matching)
+    val currentStreamAddonName: String? = null, // Addon name of the currently playing stream
     val backdrop: String? = null,
     val logo: String? = null,
     val description: String? = null,
@@ -70,10 +80,13 @@ data class PlayerUiState(
     val pendingPreviewSeekPosition: Long? = null,
     val playbackSpeed: Float = 1f,
     val loadingOverlayEnabled: Boolean = true,
-    val showPlayerLoadingStatus: Boolean = true,
+    val showPlayerLoadingStatus: Boolean = false,
+    val playbackIssueReportsEnabled: Boolean = false,
     val showLoadingOverlay: Boolean = true,
     val loadingMessage: String? = null,
     val loadingProgress: Float? = null,
+    val loadingIssueReportVisible: Boolean = false,
+    val loadingIssueElapsedMs: Long = 0L,
     val pauseOverlayEnabled: Boolean = true,
     val osdClockEnabled: Boolean = true,
     val showPauseOverlay: Boolean = false,
@@ -131,6 +144,7 @@ data class PlayerUiState(
     val episodeSelectedAddonFilter: String? = null, // null means "All"
     val episodeFilteredStreams: List<Stream> = emptyList(),
     val episodeAvailableAddons: List<String> = emptyList(),
+    val episodeSourceChips: List<SourceChipItem> = emptyList(),
     val episodeStreamsForVideoId: String? = null,
     val episodeStreamsSeason: Int? = null,
     val episodeStreamsEpisode: Int? = null,
@@ -148,6 +162,9 @@ data class PlayerUiState(
     val showAddonLogo: Boolean = true,
     val streamBadgePlacement: StreamBadgePlacement = StreamBadgePlacement.BOTTOM,
     val error: String? = null,
+    val playbackIssueReportStatus: PlaybackIssueReportStatus = PlaybackIssueReportStatus.Idle,
+    val playbackIssueReportId: String? = null,
+    val playbackIssueReportError: String? = null,
     val pendingSeekPosition: Long? = null, // For resuming from saved progress
     // Parental guide overlay
     val parentalWarnings: List<ParentalWarning> = emptyList(),
@@ -239,6 +256,7 @@ data class NextEpisodeInfo(
 
 data class SubtitleSyncCue(
     val startTimeMs: Long,
+    val endTimeMs: Long,
     val text: String
 )
 
@@ -272,7 +290,7 @@ sealed class PlayerEvent {
     data object OnShowSubtitleDelayOverlay : PlayerEvent()
     data object OnHideSubtitleDelayOverlay : PlayerEvent()
     data class OnAdjustSubtitleDelay(val deltaMs: Int, val showOverlay: Boolean = true) : PlayerEvent()
-    data object OnResetSubtitleDelay : PlayerEvent()
+    data class OnResetSubtitleDelay(val showOverlay: Boolean = true) : PlayerEvent()
     data object OnShowSpeedDialog : PlayerEvent()
     data object OnShowMoreDialog : PlayerEvent()
     data object OnDismissMoreDialog : PlayerEvent()
@@ -291,6 +309,7 @@ sealed class PlayerEvent {
     data class OnSourceStreamSelected(val stream: Stream) : PlayerEvent()
     data object OnDismissTransientOverlay : PlayerEvent()
     data object OnRetry : PlayerEvent()
+    data object OnReportPlaybackIssue : PlayerEvent()
     data object OnParentalGuideHide : PlayerEvent()
     data class OnShowDisplayModeInfo(val info: DisplayModeInfo) : PlayerEvent()
     data object OnHideDisplayModeInfo : PlayerEvent()

@@ -22,10 +22,11 @@ import javax.inject.Singleton
 class ProfileManager @Inject constructor(
     private val profileDataStore: ProfileDataStore,
     private val factory: ProfileDataStoreFactory,
+    private val credentialStores: Set<@JvmSuppressWildcards ProfileScopedCredentialStore>,
     @ApplicationContext private val context: Context
 ) {
     companion object {
-        const val MAX_PROFILES = 5
+        const val MAX_PROFILES = 6
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -97,6 +98,7 @@ class ProfileManager @Inject constructor(
     suspend fun deleteProfile(id: Int): Boolean {
         if (id == 1) return false
         if (profiles.value.none { it.id == id }) return false
+        credentialStores.forEach { store -> store.removeProfile(id) }
         deleteProfileDataAsync(id)
         profileDataStore.deleteProfile(id)
         return true

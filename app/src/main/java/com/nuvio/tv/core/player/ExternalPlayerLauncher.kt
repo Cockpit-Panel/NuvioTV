@@ -18,11 +18,16 @@ object ExternalPlayerLauncher {
         title: String? = null,
         headers: Map<String, String>? = null,
         resumePositionMs: Long = 0L,
-        subtitles: List<SubtitleInput>? = null
+        startFromBeginning: Boolean = false,
+        subtitles: List<SubtitleInput>? = null,
+        skipSegmentsJson: String? = null
     ): Boolean {
         return try {
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(Uri.parse(url), "video/*")
+
+                // Pre-resolved intro/outro skip segments (mpvNova reads this; others ignore it).
+                skipSegmentsJson?.let { putExtra("skip_segments", it) }
 
                 title?.let {
                     putExtra("title", it)
@@ -37,7 +42,13 @@ object ExternalPlayerLauncher {
                     }
                 }
 
-                if (resumePositionMs > 0L) {
+                if (startFromBeginning) {
+                    putExtra("position", 0)
+                    putExtra("extra_position", 0L)
+                    putExtra("startfrom", 0)
+                    putExtra("forceresume", false)
+                    putExtra("from_start", true)
+                } else if (resumePositionMs > 0L) {
                     putExtra("position", resumePositionMs.toInt())
                     putExtra("startfrom", resumePositionMs.toInt())
                     putExtra("forceresume", true)  // Vimu: enable resume for network streams
@@ -104,12 +115,16 @@ object ExternalPlayerLauncher {
         title: String? = null,
         headers: Map<String, String>? = null,
         resumePositionMs: Long = 0L,
-        subtitles: List<SubtitleInput>? = null
+        startFromBeginning: Boolean = false,
+        subtitles: List<SubtitleInput>? = null,
+        skipSegmentsJson: String? = null
     ): ExternalPlayerInput = ExternalPlayerInput(
         url = url,
         title = title,
         headers = headers,
         resumePositionMs = resumePositionMs,
-        subtitles = subtitles
+        startFromBeginning = startFromBeginning,
+        subtitles = subtitles,
+        skipSegmentsJson = skipSegmentsJson
     )
 }

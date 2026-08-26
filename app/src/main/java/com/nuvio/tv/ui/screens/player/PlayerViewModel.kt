@@ -7,7 +7,11 @@ import androidx.lifecycle.viewModelScope
 import androidx.media3.exoplayer.ExoPlayer
 import com.nuvio.tv.core.debrid.DirectDebridResolver
 import com.nuvio.tv.core.debrid.DirectDebridStreamPreparer
+import com.nuvio.tv.core.cloud.CloudLibraryPlaybackSessionStore
+import com.nuvio.tv.core.cloud.CloudLibraryPlaybackProgressStore
+import com.nuvio.tv.core.cloud.CloudLibraryRepository
 import com.nuvio.tv.core.plugin.PluginManager
+import com.nuvio.tv.core.tracking.TrackingScrobbleCoordinator
 import com.nuvio.tv.core.torrent.TorrentService
 import com.nuvio.tv.core.torrent.TorrentSettings
 import com.nuvio.tv.data.local.AudioDelayRouteDataStore
@@ -18,7 +22,6 @@ import com.nuvio.tv.data.local.StreamBadgeSettingsDataStore
 import com.nuvio.tv.data.repository.ParentalGuideRepository
 import com.nuvio.tv.data.repository.SkipIntroRepository
 import com.nuvio.tv.data.repository.TraktEpisodeMappingService
-import com.nuvio.tv.data.repository.TraktScrobbleService
 import com.nuvio.tv.domain.repository.AddonRepository
 import com.nuvio.tv.domain.repository.MetaRepository
 import com.nuvio.tv.domain.repository.StreamRepository
@@ -30,6 +33,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 @HiltViewModel
@@ -42,7 +46,7 @@ class PlayerViewModel @Inject constructor(
     private val pluginManager: PluginManager,
     private val subtitleRepository: com.nuvio.tv.domain.repository.SubtitleRepository,
     private val parentalGuideRepository: ParentalGuideRepository,
-    private val traktScrobbleService: TraktScrobbleService,
+    private val trackingScrobbleCoordinator: TrackingScrobbleCoordinator,
     private val traktEpisodeMappingService: TraktEpisodeMappingService,
     private val skipIntroRepository: SkipIntroRepository,
     private val playerSettingsDataStore: PlayerSettingsDataStore,
@@ -62,9 +66,14 @@ class PlayerViewModel @Inject constructor(
     private val trailerPlayerPool: com.nuvio.tv.core.player.TrailerPlayerPool,
     private val directDebridResolver: DirectDebridResolver,
     private val directDebridStreamPreparer: DirectDebridStreamPreparer,
+    private val cloudLibraryRepository: CloudLibraryRepository,
+    private val cloudPlaybackProgressStore: CloudLibraryPlaybackProgressStore,
+    private val cloudPlaybackSessionStore: CloudLibraryPlaybackSessionStore,
     private val streamBadgePresentation: com.nuvio.tv.core.streams.StreamBadgePresentation,
+    private val playbackIssueReportRepository: com.nuvio.tv.data.repository.PlaybackIssueReportRepository,
     private val externalPlaybackTracker: com.nuvio.tv.core.player.ExternalPlaybackTracker,
     private val subtitleFileCache: com.nuvio.tv.core.player.SubtitleFileCache,
+    private val tvRecommendationManager: com.nuvio.tv.core.recommendations.TvRecommendationManager,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -74,7 +83,7 @@ class PlayerViewModel @Inject constructor(
         trailerPlayerPool.yield()
     }
 
-    private val controller = PlayerRuntimeController(
+    internal val controller = PlayerRuntimeController(
         context = context,
         watchProgressRepository = watchProgressRepository,
         metaRepository = metaRepository,
@@ -83,7 +92,7 @@ class PlayerViewModel @Inject constructor(
         pluginManager = pluginManager,
         subtitleRepository = subtitleRepository,
         parentalGuideRepository = parentalGuideRepository,
-        traktScrobbleService = traktScrobbleService,
+        trackingScrobbleCoordinator = trackingScrobbleCoordinator,
         traktEpisodeMappingService = traktEpisodeMappingService,
         skipIntroRepository = skipIntroRepository,
         playerSettingsDataStore = playerSettingsDataStore,
@@ -102,7 +111,12 @@ class PlayerViewModel @Inject constructor(
         tmdbSettingsDataStore = tmdbSettingsDataStore,
         directDebridResolver = directDebridResolver,
         directDebridStreamPreparer = directDebridStreamPreparer,
+        cloudLibraryRepository = cloudLibraryRepository,
+        cloudPlaybackProgressStore = cloudPlaybackProgressStore,
+        cloudPlaybackSessionStore = cloudPlaybackSessionStore,
         streamBadgePresentation = streamBadgePresentation,
+        playbackIssueReportRepository = playbackIssueReportRepository,
+        tvRecommendationManager = tvRecommendationManager,
         savedStateHandle = savedStateHandle,
         scope = viewModelScope
     )
@@ -160,6 +174,10 @@ class PlayerViewModel @Inject constructor(
         controller.onEvent(event)
     }
 
+    fun bindExoSubtitleView(subtitleView: androidx.media3.ui.SubtitleView?) {
+        controller.bindExoSubtitleView(subtitleView)
+    }
+
     fun consumePendingExitReason() {
         controller.consumePendingExitReason()
     }
@@ -186,25 +204,54 @@ class PlayerViewModel @Inject constructor(
 
     /**
      * Launch the current stream in an external player via the centralized tracker.
-     * The tracker handles progress saving independently of PlayerScreen lifecycle.
+     *
+     * Keep the ViewModel alive until the external intent has been handed to the launcher.
+     * This lets the caller navigate away only after a successful handoff, while failures
+     * remain visible on the current player screen (#2560).
      */
-    fun launchInExternalPlayer(activityContext: Context, resumePositionMs: Long) {
+    fun launchInExternalPlayer(
+        activityContext: Context,
+        resumePositionMs: Long,
+        onResult: (Boolean) -> Unit
+    ) {
         val url = controller.getCurrentStreamUrl()
+        if (url.isBlank()) {
+            onResult(false)
+            return
+        }
+        val contentId = controller.contentId
+            ?: controller.cloudPlaybackContext?.item?.stableKey
+            ?: run {
+            onResult(false)
+            return
+        }
+        val videoId = controller.currentVideoId ?: contentId
         val metadata = com.nuvio.tv.core.player.ExternalPlaybackMetadata(
-            contentId = controller.contentId ?: return,
+            contentId = contentId,
             contentType = controller.contentType ?: "movie",
             contentName = controller.contentName ?: controller.title,
             poster = controller.poster,
             backdrop = controller.backdrop,
             logo = controller.logo,
-            videoId = controller.currentVideoId ?: controller.contentId ?: return,
+            videoId = videoId,
             season = controller.currentSeason,
             episode = controller.currentEpisode,
             episodeTitle = controller.currentEpisodeTitle,
             year = controller.year
         )
+        val headers = controller.getCurrentHeaders()
+        val nextEpisodeSnapshot = controller.metaVideos
+            .takeIf { it.isNotEmpty() }
+            ?.let { videos ->
+                com.nuvio.tv.core.player.resolveExternalNextEpisodeSnapshot(
+                    videos = videos,
+                    currentSeason = metadata.season,
+                    currentEpisode = metadata.episode
+                )
+            }
 
-        // Pass already-loaded addon subtitles if forward setting is enabled
+        // Capture already-loaded addon subtitles before handing off. Preparation stays in the
+        // ViewModel scope because the player screen remains alive until the intent is sent.
         val subtitleInputs = if (controller.uiState.value.subtitleStyle.preferredLanguage.trim().lowercase() != "none") {
             val addonSubtitles = controller.uiState.value.addonSubtitles
             if (addonSubtitles.isNotEmpty()) {
@@ -218,19 +265,37 @@ class PlayerViewModel @Inject constructor(
             } else null
         } else null
 
-        // Cache subtitle files locally and launch player in background
         viewModelScope.launch {
-            val cachedSubtitles = subtitleInputs?.let { subtitleFileCache.cacheSubtitles(it) }
+            val cachedSubtitles = subtitleInputs?.let { inputs ->
+                try {
+                    withTimeoutOrNull(10_000L) {
+                        subtitleFileCache.cacheSubtitles(inputs)
+                    }
+                } catch (_: Exception) {
+                    // Subtitle forwarding is best-effort; the external launch must still proceed.
+                    null
+                }
+            }
 
-            externalPlaybackTracker.launchPlayer(
-                metadata = metadata,
-                url = url,
-                title = metadata.buildPlayerTitle(),
-                headers = controller.getCurrentHeaders(),
-                resumePositionMs = resumePositionMs,
-                subtitles = cachedSubtitles,
-                context = activityContext
-            )
+            // Stop the internal player only after preparation has completed and immediately
+            // before sending the external intent.
+            controller.stopAndRelease()
+            val launched = try {
+                externalPlaybackTracker.launchPlayer(
+                    metadata = metadata,
+                    url = url,
+                    title = metadata.buildPlayerTitle(),
+                    headers = headers,
+                    resumePositionMs = resumePositionMs,
+                    subtitles = cachedSubtitles,
+                    nextEpisodeSnapshot = nextEpisodeSnapshot,
+                    cloudSessionToken = controller.cloudSessionToken,
+                    context = activityContext
+                )
+            } catch (_: Exception) {
+                false
+            }
+            onResult(launched)
         }
     }
 }

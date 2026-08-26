@@ -23,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -33,8 +34,15 @@ import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.ExperimentalTvMaterial3Api
@@ -42,13 +50,16 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import coil3.imageLoader
 import coil3.memory.MemoryCache
 import coil3.request.ImageRequest
+import com.nuvio.tv.domain.model.ContinueWatchingCardStyle
 import com.nuvio.tv.domain.model.FocusedPosterTrailerPlaybackTarget
 import com.nuvio.tv.domain.model.MetaPreview
+import com.nuvio.tv.domain.model.isPlaceholder
 import com.nuvio.tv.ui.util.StableList
 import com.nuvio.tv.ui.util.StableMap
 import com.nuvio.tv.ui.util.StableRef
 import com.nuvio.tv.ui.util.dpadVerticalFastScroll
 import com.nuvio.tv.ui.util.recompositionHighlighter
+import com.nuvio.tv.ui.components.rememberPlaceholderShimmerOffsetState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
@@ -113,6 +124,8 @@ internal fun ModernHomeRowsList(
     continueWatchingCardHeight: Dp,
     blurUnwatchedEpisodes: Boolean,
     useEpisodeThumbnails: Boolean,
+    continueWatchingCardStyle: ContinueWatchingCardStyle,
+    continueWatchingCornerRadius: Dp,
     pendingRowFocusKey: State<String?>,
     pendingRowFocusIndex: State<Int?>,
     pendingRowFocusNonce: State<Int>,
@@ -129,6 +142,7 @@ internal fun ModernHomeRowsList(
     focusedHeroMediaNonce: State<Int>,
     onFocusedHeroMediaNonceChange: (Int) -> Unit,
     onExpansionInteractionNonceChange: (Int) -> Unit,
+    blockLeftOnFirstExpandedItem: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     // Unwrap StableRef wrappers for internal use (not passed to child composables)
@@ -144,20 +158,33 @@ internal fun ModernHomeRowsList(
 
     val density = LocalDensity.current
     val context = LocalContext.current
+    val layoutDirection = LocalLayoutDirection.current
     val verticalPrefetchImageLoader = context.imageLoader
+    val latestCarouselRowsForImagePrefetch = rememberUpdatedState(carouselRows)
 
-    LaunchedEffect(verticalPrefetchImageLoader, density) {
+    LaunchedEffect(
+        verticalPrefetchImageLoader,
+        verticalRowListState,
+        density,
+        useLandscapePosters,
+        effectiveExpandEnabled,
+        portraitCatalogCardWidth,
+        portraitCatalogCardHeight,
+        landscapeCatalogCardWidth,
+        landscapeCatalogCardHeight
+    ) {
         val prefetchAheadRows = 1
         val prefetchItemsPerRow = 1
         snapshotFlow {
             verticalRowListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
         }
             .distinctUntilChanged()
-            .debounce(120L) // VERTICAL_PREFETCH_DEBOUNCE_MS
+            .debounce(240L) // VERTICAL_PREFETCH_DEBOUNCE_MS
             .collect { lastVisibleRowIndex ->
                 withContext(Dispatchers.IO) {
                     for (rowOffset in 1..prefetchAheadRows) {
-                        val row = carouselRows.list.getOrNull(lastVisibleRowIndex + rowOffset) ?: continue
+                        val row = latestCarouselRowsForImagePrefetch.value.list
+                            .getOrNull(lastVisibleRowIndex + rowOffset) ?: continue
                         for (i in 0 until minOf(prefetchItemsPerRow, row.items.list.size)) {
                             val item = row.items.list[i]
                             val url = item.imageUrl ?: continue
@@ -171,6 +198,7 @@ internal fun ModernHomeRowsList(
                             )
                             val wPx = with(density) { metrics.width.roundToPx() }
                             val hPx = with(density) { metrics.height.roundToPx() }
+                            if (wPx <= 0 || hPx <= 0) continue
                             val cacheKey = "${url}_${wPx}x${hPx}"
                             if (verticalPrefetchImageLoader.memoryCache?.get(MemoryCache.Key(cacheKey)) != null) continue
                             verticalPrefetchImageLoader.enqueue(
@@ -189,47 +217,26 @@ internal fun ModernHomeRowsList(
     val latestOnRequestLazyCatalogLoad = rememberUpdatedState(onRequestLazyCatalogLoad)
     val latestCarouselRowsForLazy = rememberUpdatedState(carouselRows)
     LaunchedEffect(verticalRowListState) {
-        val prefetchAheadForLazy = 1
+        val prefetchAheadForLazy = 2
         snapshotFlow {
-            val scrolling = verticalRowListState.isScrollInProgress
             val info = verticalRowListState.layoutInfo
             val firstVisible = info.visibleItemsInfo.firstOrNull()?.index ?: -1
             val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            Triple(scrolling, firstVisible, lastVisible)
-        }.collect { (scrolling, firstVisible, lastVisible) ->
-            if (scrolling || lastVisible < 0) return@collect
-            delay(150)
-            if (verticalRowListState.isScrollInProgress) return@collect
+            firstVisible to lastVisible
+        }.collectLatest { (firstVisible, lastVisible) ->
+            if (lastVisible < 0) return@collectLatest
+            // Debounce: restarts on every new emission during rapid scroll.
+            // Only fires when visible indices stabilize for 240ms.
+            delay(240)
             val rows = latestCarouselRowsForLazy.value
             for (idx in firstVisible.coerceAtLeast(0)..(lastVisible + prefetchAheadForLazy)) {
                 val row = rows.list.getOrNull(idx) ?: continue
-                if (row.isLoading && row.items.list.firstOrNull()?.imageUrl == "placeholder://empty") {
-                    latestOnRequestLazyCatalogLoad.value(row.key)
+                if (row.isLoading && row.items.list.firstOrNull()?.imageUrl.isPlaceholder()) {
+                    val legacyKey = "${row.addonId}_${row.apiType}_${row.catalogId}"
+                    latestOnRequestLazyCatalogLoad.value(legacyKey)
                 }
             }
         }
-    }
-
-    // Secondary trigger: when scroll settles after focus-driven BringIntoView,
-    // check again for placeholder rows that need loading. The primary snapshotFlow
-    // above may miss this if visible indices didn't change.
-    LaunchedEffect(verticalRowListState) {
-        snapshotFlow { verticalRowListState.isScrollInProgress }
-            .collect { scrolling ->
-                if (scrolling) return@collect
-                delay(200)
-                if (verticalRowListState.isScrollInProgress) return@collect
-                val rows = latestCarouselRowsForLazy.value
-                val info = verticalRowListState.layoutInfo
-                val firstVisible = info.visibleItemsInfo.firstOrNull()?.index ?: return@collect
-                val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: return@collect
-                for (idx in firstVisible.coerceAtLeast(0)..(lastVisible + 1)) {
-                    val row = rows.list.getOrNull(idx) ?: continue
-                    if (row.isLoading && row.items.list.firstOrNull()?.imageUrl == "placeholder://empty") {
-                        latestOnRequestLazyCatalogLoad.value(row.key)
-                    }
-                }
-            }
     }
 
     val focusRestorerRequester = remember(activeRowKey) {
@@ -239,6 +246,8 @@ internal fun ModernHomeRowsList(
     }
 
     val defaultBringIntoViewSpec = LocalBringIntoViewSpec.current
+
+    val sharedPlaceholderShimmerOffsetState = rememberPlaceholderShimmerOffsetState(label = "sharedRowShimmer")
 
     CompositionLocalProvider(
         LocalBringIntoViewSpec provides verticalRowBringIntoViewSpec,
@@ -256,6 +265,32 @@ internal fun ModernHomeRowsList(
                 .graphicsLayer { alpha = trailerContentAlpha() }
                 .focusRequester(contentFocusRequester)
                 .focusRestorer { focusRestorerRequester() }
+                .onPreviewKeyEvent { event ->
+                    val firstRowKey = carouselRows.list.firstOrNull()?.key
+                    val lastRowKey = carouselRows.list.lastOrNull()?.key
+                    if (event.type == KeyEventType.KeyDown &&
+                        event.key == Key.DirectionUp &&
+                        effectiveExpandEnabled &&
+                        expandedCatalogFocusKey.value != null &&
+                        activeRowKey.value == firstRowKey
+                    ) return@onPreviewKeyEvent true
+                    if (event.type == KeyEventType.KeyDown &&
+                        event.key == Key.DirectionDown &&
+                        effectiveExpandEnabled &&
+                        expandedCatalogFocusKey.value != null &&
+                        activeRowKey.value == lastRowKey
+                    ) return@onPreviewKeyEvent true
+                    val blockKey = if (layoutDirection == LayoutDirection.Rtl)
+                        Key.DirectionRight else Key.DirectionLeft
+                    if (blockLeftOnFirstExpandedItem &&
+                        event.type == KeyEventType.KeyDown &&
+                        event.key == blockKey &&
+                        effectiveExpandEnabled &&
+                        expandedCatalogFocusKey.value != null &&
+                        activeItemIndex.value == 0
+                    ) return@onPreviewKeyEvent true
+                    false
+                }
                 .dpadVerticalFastScroll(
                     scrollableState = verticalRowListState,
                     onFastScrollingChanged = onFastScrollingChanged,
@@ -307,7 +342,7 @@ internal fun ModernHomeRowsList(
         ) {
             itemsIndexed(
                 items = carouselRows.list,
-                key = { _, row -> row.key },
+                key = { index, row -> "${row.key}_$index" },
                 contentType = { _, row -> row.apiType ?: "modern_home_row" }
             ) { _, row ->
                 val stableOnContinueWatchingOptions = remember(onContinueWatchingOptions) {
@@ -395,6 +430,8 @@ internal fun ModernHomeRowsList(
                     continueWatchingCardHeight = continueWatchingCardHeight,
                     blurUnwatchedEpisodes = blurUnwatchedEpisodes,
                     useEpisodeThumbnails = useEpisodeThumbnails,
+                    continueWatchingCardStyle = continueWatchingCardStyle,
+                    continueWatchingCornerRadius = continueWatchingCornerRadius,
                     onContinueWatchingClick = onContinueWatchingClick,
                     onContinueWatchingOptions = stableOnContinueWatchingOptions,
                     isCatalogItemWatched = isCatalogItemWatched,
@@ -408,6 +445,7 @@ internal fun ModernHomeRowsList(
                     onLoadMoreCatalog = onLoadMoreCatalog,
                     onBackdropInteraction = onBackdropInteraction,
                     onExpandedCatalogFocusKeyChange = onExpandedCatalogFocusKeyChange,
+                    sharedPlaceholderShimmerOffsetState = sharedPlaceholderShimmerOffsetState,
                     isVerticalRowsScrollingState = isVerticalRowsScrollingState,
                     itemFocusRequesters = stableItemFocusRequestersByRow.getOrPut(row.key) {
                         StableRef(mutableMapOf())

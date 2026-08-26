@@ -77,11 +77,20 @@ internal fun isRetryablePlaybackError(error: PlaybackException): Boolean {
         PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
         PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
         PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
-        PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
         PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
         PlaybackException.ERROR_CODE_IO_NO_PERMISSION,
         PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED,
-        PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE,
+        PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE, -> true
+
+        PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> {
+            val httpCause = error.findCauseOfType<HttpDataSource.InvalidResponseCodeException>()
+            if (httpCause != null) {
+                val code = httpCause.responseCode
+                !(code == 400 || code == 401 || code == 403 || code == 404 || code == 410)
+            } else {
+                true
+            }
+        }
         PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
         PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
         PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
@@ -103,6 +112,30 @@ internal fun isRetryablePlaybackError(error: PlaybackException): Boolean {
     }
 }
 
+/**
+ * Audio-track failures that the safe-audio → audio-disabled fallback ladder can recover from.
+ *
+ * - [PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED] (5001): the AudioTrack could not be
+ *   created (e.g. the requested passthrough/offload encoding is not actually accepted by the sink).
+ * - [PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED] (5002): a write to the AudioTrack
+ *   failed, most commonly with `AudioTrack.ERROR_DEAD_OBJECT` (-6) when an HDMI/audio-route
+ *   renegotiation invalidates an E-AC-3/AC-3 passthrough or offload track mid-playback.
+ *
+ * Both are remedied by re-selecting audio with tunneling/passthrough off and the channel count
+ * constrained to the device's capabilities (safe-audio mode), or by dropping audio entirely — so
+ * a write failure must take the same recovery path as an init failure rather than landing on the
+ * fatal error screen.
+ *
+ * [combinedMessage] is the concatenated exception/cause messages; the string checks are a safety
+ * net for devices that surface the same failure under a generic error code.
+ */
+internal fun isAudioTrackFailure(errorCode: Int, combinedMessage: String): Boolean {
+    if (errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED) return true
+    if (errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED) return true
+    return combinedMessage.contains("audiotrack init failed", ignoreCase = true) ||
+        combinedMessage.contains("audiotrack write failed", ignoreCase = true)
+}
+
 internal fun PlaybackException.findInvalidResponseCodeException(): HttpDataSource.InvalidResponseCodeException? {
     var current: Throwable? = cause
     while (current != null) {
@@ -118,11 +151,13 @@ internal fun PlaybackException.toDisplayMessage(context: android.content.Context
         val code = responseException.responseCode
         val statusText = responseException.responseMessage?.takeIf { it.isNotBlank() }
         val providerHint = when (code) {
+            400 -> context.getString(com.nuvio.tv.R.string.player_error_stream_blocked)
+            401 -> context.getString(com.nuvio.tv.R.string.player_error_stream_expired)
             403 -> context.getString(com.nuvio.tv.R.string.player_error_stream_blocked)
             404 -> context.getString(com.nuvio.tv.R.string.player_error_stream_removed)
             410 -> context.getString(com.nuvio.tv.R.string.player_error_stream_expired)
             429 -> context.getString(com.nuvio.tv.R.string.player_error_stream_rate_limited)
-            500, 502, 503 -> context.getString(com.nuvio.tv.R.string.player_error_stream_unavailable)
+            500, 502, 503, 504 -> context.getString(com.nuvio.tv.R.string.player_error_stream_unavailable)
             else -> ""
         }
         return buildString {
@@ -270,6 +305,7 @@ internal fun PlayerRuntimeController.attemptAutoRetry(
 internal fun PlayerRuntimeController.resetErrorRetryState() {
     startupRetryCount = 0
     errorRetryCount = 0
+    parsingErrorProbeAttempted = false
     pendingAudioPcmFallbackRebuild = false
     errorRetryJob?.cancel()
     errorRetryJob = null
@@ -392,6 +428,82 @@ internal fun PlayerRuntimeController.tryDv7HevcFallback(
             _uiState.update { it.copy(pendingSeekPosition = savedPosition) }
         }
         initializePlayer(currentStreamUrl, currentHeaders, startPaused = paused)
+    }
+    return true
+}
+
+internal fun PlayerRuntimeController.tryParsingErrorProbeFallback(
+    error: PlaybackException,
+    detailedError: String,
+    allowEngineFailover: Boolean,
+    savedPosition: Long = 0L,
+    paused: Boolean = userPausedManually
+): Boolean {
+    val isSourceOrParsingError = error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
+        error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
+        error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED ||
+        error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ||
+        error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW ||
+        error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+        error.findCauseOfType<androidx.media3.exoplayer.source.UnrecognizedInputFormatException>() != null ||
+        error.cause?.toString()?.contains("UnrecognizedInputFormatException") == true
+
+    if (!isSourceOrParsingError) return false
+    if (parsingErrorProbeAttempted) return false
+    parsingErrorProbeAttempted = true
+
+    val previousMimeType = currentStreamMimeType
+    Log.w(
+        PlayerRuntimeController.TAG,
+        "Source/parsing error [${error.errorCode}] detected (previous mimeType=$previousMimeType). " +
+            "Probing stream format..."
+    )
+
+    errorRetryJob?.cancel()
+    errorRetryJob = scope.launch {
+        showRecoveryOverlay()
+        val probedMime = PlayerMediaSourceFactory.probeNetworkMimeType(
+            url = currentStreamUrl,
+            headers = currentHeaders
+        )
+
+        if (probedMime != null && probedMime != previousMimeType) {
+            Log.i(
+                PlayerRuntimeController.TAG,
+                "Stream probe resolved mimeType=$probedMime (was $previousMimeType). Retrying playback..."
+            )
+            currentStreamMimeType = probedMime
+            currentStreamResponseHeaders = emptyMap()
+            releasePlayer(flushPlaybackState = false)
+            if (savedPosition > 0L) {
+                _uiState.update { it.copy(pendingSeekPosition = savedPosition) }
+            }
+            initializePlayer(currentStreamUrl, currentHeaders, startPaused = paused)
+        } else if (previousMimeType == androidx.media3.common.MimeTypes.APPLICATION_M3U8) {
+            currentStreamMimeType = null
+            currentStreamResponseHeaders = emptyMap()
+            releasePlayer(flushPlaybackState = false)
+            if (savedPosition > 0L) {
+                _uiState.update { it.copy(pendingSeekPosition = savedPosition) }
+            }
+            initializePlayer(currentStreamUrl, currentHeaders, startPaused = paused)
+        } else {
+            if (maybeAutoSwitchInternalPlayerOnStartupError(detailedError = detailedError, allowEngineFailover = allowEngineFailover)) {
+                return@launch
+            }
+            if (attemptAutoRetry(error, detailedError)) {
+                return@launch
+            }
+            val userFacingError = error.toDisplayMessage(context)
+            _uiState.update {
+                it.copy(
+                    error = userFacingError,
+                    isBuffering = false,
+                    showLoadingOverlay = false,
+                    showPauseOverlay = false
+                )
+            }
+        }
     }
     return true
 }

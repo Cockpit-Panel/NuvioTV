@@ -4,6 +4,7 @@ package com.nuvio.tv.ui.screens.plugin
 
 import com.nuvio.tv.ui.theme.NuvioTheme
 
+import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -11,6 +12,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.rememberScrollState
@@ -39,7 +41,9 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -56,7 +60,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
@@ -312,7 +318,7 @@ private fun PluginStreamGroupingCard(
         ),
         border = ClickableSurfaceDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                 shape = RoundedCornerShape(NuvioTheme.radii.md)
             )
         ),
@@ -373,7 +379,7 @@ private fun PluginsEnabledCard(
         ),
         border = ClickableSurfaceDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                 shape = RoundedCornerShape(NuvioTheme.radii.md)
             )
         ),
@@ -466,7 +472,7 @@ private fun AddRepositoryInline(
                             shape = RoundedCornerShape(NuvioTheme.radii.md)
                         ),
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = RoundedCornerShape(NuvioTheme.radii.md)
                         )
                     ),
@@ -534,7 +540,7 @@ private fun AddRepositoryInline(
                     ),
                     border = ButtonDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = RoundedCornerShape(50)
                         )
                     )
@@ -550,6 +556,160 @@ private fun AddRepositoryInline(
                     }
                     Spacer(modifier = Modifier.width(NuvioTheme.spacing.sm))
                     Text(stringResource(R.string.plugin_add_btn))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ManageFromPhoneCard(onClick: () -> Unit) {
+    var isFocused by remember { mutableStateOf(false) }
+
+    Surface(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .onFocusChanged { isFocused = it.isFocused },
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = NuvioTheme.colors.BackgroundCard,
+            focusedContainerColor = NuvioTheme.colors.FocusBackground
+        ),
+        border = ClickableSurfaceDefaults.border(
+            focusedBorder = Border(
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
+                shape = RoundedCornerShape(18.dp)
+            )
+        ),
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(18.dp)),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.01f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.QrCode2,
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                    tint = if (isFocused) NuvioTheme.colors.Secondary else NuvioTheme.colors.TextSecondary
+                )
+                Spacer(modifier = Modifier.width(NuvioTheme.spacing.lg))
+                Column {
+                    Text(
+                        text = stringResource(R.string.plugin_manage_from_phone_title),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = NuvioTheme.colors.TextPrimary
+                    )
+                    Text(
+                        text = stringResource(R.string.plugin_manage_from_phone_subtitle),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NuvioTheme.colors.TextSecondary
+                    )
+                }
+            }
+            Icon(
+                imageVector = Icons.Default.PhoneAndroid,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = NuvioTheme.colors.TextSecondary
+            )
+        }
+    }
+}
+
+@Composable
+private fun QrCodeOverlay(
+    qrBitmap: Bitmap?,
+    serverUrl: String?,
+    onClose: () -> Unit,
+    hasPendingChange: Boolean = false
+) {
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(hasPendingChange) {
+        if (!hasPendingChange) {
+            focusRequester.requestFocus()
+        }
+    }
+
+    BackHandler { onClose() }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.85f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = stringResource(R.string.plugin_qr_instruction),
+                style = MaterialTheme.typography.bodyMedium,
+                color = NuvioTheme.colors.TextSecondary,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(NuvioTheme.spacing.lg))
+
+            if (qrBitmap != null) {
+                Image(
+                    bitmap = qrBitmap.asImageBitmap(),
+                    contentDescription = stringResource(R.string.cd_qr_code),
+                    modifier = Modifier.size(220.dp),
+                    contentScale = ContentScale.Fit
+                )
+            }
+
+            Spacer(modifier = Modifier.height(NuvioTheme.spacing.md))
+
+            if (serverUrl != null) {
+                Text(
+                    text = serverUrl,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = NuvioTheme.colors.TextTertiary,
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            Spacer(modifier = Modifier.height(NuvioTheme.spacing.xl))
+
+            Surface(
+                onClick = onClose,
+                modifier = Modifier.focusRequester(focusRequester),
+                colors = ClickableSurfaceDefaults.colors(
+                    containerColor = NuvioTheme.colors.Surface,
+                    focusedContainerColor = NuvioTheme.colors.FocusBackground
+                ),
+                border = ClickableSurfaceDefaults.border(
+                    focusedBorder = Border(
+                        border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
+                        shape = RoundedCornerShape(50)
+                    )
+                ),
+                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(50)),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = NuvioTheme.spacing.xl, vertical = NuvioTheme.spacing.md),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = NuvioTheme.colors.TextPrimary
+                    )
+                    Spacer(modifier = Modifier.width(NuvioTheme.spacing.sm))
+                    Text(
+                        text = stringResource(R.string.plugin_qr_close),
+                        color = NuvioTheme.colors.TextPrimary
+                    )
                 }
             }
         }
@@ -699,7 +859,7 @@ private fun ConfirmRepoChangesDialog(
                             ),
                             border = ClickableSurfaceDefaults.border(
                                 focusedBorder = Border(
-                                    border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                                     shape = RoundedCornerShape(50)
                                 )
                             ),
@@ -732,7 +892,7 @@ private fun ConfirmRepoChangesDialog(
                             ),
                             border = ClickableSurfaceDefaults.border(
                                 focusedBorder = Border(
-                                    border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                                     shape = RoundedCornerShape(50)
                                 )
                             ),
@@ -809,7 +969,7 @@ private fun ConfirmScraperEnableDialog(
                         ),
                         border = ClickableSurfaceDefaults.border(
                             focusedBorder = Border(
-                                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                                 shape = RoundedCornerShape(50)
                             )
                         ),
@@ -842,7 +1002,7 @@ private fun ConfirmScraperEnableDialog(
                         ),
                         border = ClickableSurfaceDefaults.border(
                             focusedBorder = Border(
-                                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                                 shape = RoundedCornerShape(50)
                             )
                         ),
@@ -954,7 +1114,7 @@ private fun RepositoryCard(
                         ),
                         border = ClickableSurfaceDefaults.border(
                             focusedBorder = Border(
-                                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                                 shape = RoundedCornerShape(NuvioTheme.radii.md)
                             )
                         ),
@@ -1145,7 +1305,7 @@ private fun ScraperCard(
                             ),
                             border = ClickableSurfaceDefaults.border(
                                 focusedBorder = Border(
-                                    border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                                     shape = RoundedCornerShape(NuvioTheme.radii.md)
                                 )
                             ),

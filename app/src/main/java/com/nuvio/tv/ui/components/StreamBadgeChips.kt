@@ -2,7 +2,9 @@ package com.nuvio.tv.ui.components
 
 import com.nuvio.tv.ui.theme.NuvioTheme
 
+import androidx.compose.foundation.MarqueeSpacing
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -20,6 +23,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -29,10 +34,62 @@ import androidx.tv.material3.Text
 import com.nuvio.tv.R
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import coil3.disk.DiskCache
+import coil3.memory.MemoryCache
+import coil3.ImageLoader
+import coil3.request.CachePolicy
 import coil3.request.ImageRequest
+import coil3.request.allowHardware
+import coil3.request.allowRgb565
 import coil3.request.crossfade
+import coil3.size.Precision
 import com.nuvio.tv.domain.model.StreamBadge
+import okio.Path.Companion.toOkioPath
 import kotlin.math.round
+
+/**
+ * Shared badge ImageRequest cache. Badges with the same URL and target decode
+ * dimensions share a single [ImageRequest] instance across all composables in
+ * the stream list. This avoids per-item allocations of builder objects and
+ * intermediate strings that pressure the GC on low-memory TV devices.
+ *
+ * The cache is keyed by the Coil memory-cache key (url + dimensions) and is
+ * bounded by the number of unique badge images (typically 10-30 in practice).
+ * Entries are never evicted — they live for the process lifetime which is fine
+ * because they hold no bitmaps, only request metadata.
+ */
+private val badgeImageRequestCache = HashMap<String, ImageRequest>(32)
+
+private var badgeImageLoader: ImageLoader? = null
+
+private fun getBadgeImageLoader(context: android.content.Context): ImageLoader {
+    badgeImageLoader?.let { return it }
+    val loader = ImageLoader.Builder(context.applicationContext)
+        .memoryCache {
+            MemoryCache.Builder()
+                .maxSizePercent(context.applicationContext, 0.05)
+                .build()
+        }
+        .diskCache {
+            DiskCache.Builder()
+                .directory(context.applicationContext.cacheDir.resolve("badge_cache").toOkioPath())
+                .maxSizeBytes(50L * 1024 * 1024)
+                .build()
+        }
+        .precision(Precision.INEXACT)
+        .crossfade(false)
+        .allowHardware(true)
+        .allowRgb565(true)
+        .build()
+    badgeImageLoader = loader
+    return loader
+}
+
+/** Shared shape instance — all badge chips use the same corner radius. */
+private val BadgeChipShape = RoundedCornerShape(6.dp)
+
+/** Marquee scroll speed — matches FocusMarqueeText velocity for visual consistency. */
+private val MarqueeVelocity = 45.dp
 
 @Composable
 fun StreamBadgeChips(
@@ -40,6 +97,7 @@ fun StreamBadgeChips(
     fileSizeBytes: Long? = null,
     showFileSizeBadge: Boolean = false,
     animate: Boolean = false,
+    focused: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val imageBadges = remember(badges) { badges.filter { it.imageURL.isNotBlank() } }
@@ -56,19 +114,25 @@ fun StreamBadgeChips(
         1f
     }
 
-    Row(
+    Box(
         modifier = modifier
             .fillMaxWidth()
             .clipToBounds()
+            .then(if (focused) Modifier.basicMarquee(iterations = Int.MAX_VALUE, velocity = MarqueeVelocity, spacing = MarqueeSpacing(36.dp)) else Modifier)
             .then(if (chipAlpha < 1f) Modifier.alpha(chipAlpha) else Modifier),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)
+        contentAlignment = Alignment.CenterStart
     ) {
-        imageBadges.forEach { badge ->
-            StreamImportedBadgeChip(badge = badge)
-        }
-        if (sizeBytes != null) {
-            StreamFileSizeBadge(bytes = sizeBytes)
+        Row(
+            modifier = Modifier.wrapContentWidth(align = Alignment.Start, unbounded = true),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)
+        ) {
+            imageBadges.forEach { badge ->
+                StreamImportedBadgeChip(badge = badge)
+            }
+            if (sizeBytes != null) {
+                StreamFileSizeBadge(bytes = sizeBytes)
+            }
         }
     }
 }
@@ -87,13 +151,12 @@ private fun StreamFileSizeBadge(bytes: Long) {
             mbTemplate.format(round(mib).toInt().toString())
         }
     }
-    val shape = RoundedCornerShape(6.dp)
     Box(
         modifier = Modifier
             .height(20.dp)
-            .clip(shape)
-            .background(Color(0xFF0A0C0C), shape)
-            .border(NuvioTheme.spacing.hairline, Color(0xFF0A0C0C), shape)
+            .clip(BadgeChipShape)
+            .background(Color(0xFF0A0C0C), BadgeChipShape)
+            .border(NuvioTheme.spacing.hairline, Color(0xFF0A0C0C), BadgeChipShape)
             .padding(horizontal = 6.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -107,7 +170,6 @@ private fun StreamFileSizeBadge(bytes: Long) {
 
 @Composable
 private fun StreamImportedBadgeChip(badge: StreamBadge, crossfade: Boolean = false) {
-    val shape = RoundedCornerShape(6.dp)
     val context = LocalContext.current
     val density = LocalDensity.current
     val backgroundColor = remember(badge.tagColor, badge.tagStyle) {
@@ -126,19 +188,28 @@ private fun StreamImportedBadgeChip(badge: StreamBadge, crossfade: Boolean = fal
     val decodeWidth = remember(density) {
         with(density) { 92.dp.roundToPx() } * 2
     }
-    val imageRequest = remember(context, badge.imageURL, decodeHeight) {
-        ImageRequest.Builder(context)
-            .data(badge.imageURL)
-            .size(width = decodeWidth, height = decodeHeight)
-            .memoryCacheKey("${badge.imageURL}_${decodeWidth}x${decodeHeight}")
-            .diskCacheKey(badge.imageURL)
-            .crossfade(false)
-            .build()
+    // Reuse ImageRequest instances across composables via a shared HashMap.
+    // This avoids creating a new Builder + intermediate strings per badge per
+    // recomposition and ensures Coil's internal equality checks hit the same
+    // object reference — preventing redundant decode dispatches.
+    val cacheKey = "${badge.imageURL}_${decodeWidth}x${decodeHeight}"
+    val imageRequest = remember(cacheKey) {
+        badgeImageRequestCache.getOrPut(cacheKey) {
+            ImageRequest.Builder(context)
+                .data(badge.imageURL)
+                .size(width = decodeWidth, height = decodeHeight)
+                .memoryCacheKey(cacheKey)
+                .diskCacheKey(badge.imageURL)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .crossfade(false)
+                .build()
+        }
     }
     val chipModifier = Modifier
         .height(20.dp)
-        .then(if (backgroundColor != null) Modifier.background(backgroundColor, shape) else Modifier)
-        .then(if (outlineColor != null) Modifier.border(NuvioTheme.spacing.hairline, outlineColor, shape) else Modifier)
+        .then(if (backgroundColor != null) Modifier.background(backgroundColor, BadgeChipShape) else Modifier)
+        .then(if (outlineColor != null) Modifier.border(NuvioTheme.spacing.hairline, outlineColor, BadgeChipShape) else Modifier)
 
     Box(
         modifier = chipModifier
@@ -147,11 +218,12 @@ private fun StreamImportedBadgeChip(badge: StreamBadge, crossfade: Boolean = fal
     ) {
         AsyncImage(
             model = imageRequest,
+            imageLoader = getBadgeImageLoader(context),
             contentDescription = badge.name,
             modifier = Modifier
                 .height(NuvioTheme.spacing.lg)
                 .widthIn(min = 34.dp, max = 92.dp)
-                .clip(shape),
+                .clip(BadgeChipShape),
             contentScale = ContentScale.Fit
         )
     }

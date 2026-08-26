@@ -14,7 +14,6 @@ import com.nuvio.tv.data.local.FrameRateMatchingMode
 import com.nuvio.tv.data.local.NextEpisodeThresholdMode
 import com.nuvio.tv.data.local.StreamAutoPlayMode
 import com.nuvio.tv.data.local.StreamAutoPlaySource
-import com.nuvio.tv.data.local.AddonSubtitleStartupMode
 import com.nuvio.tv.data.local.AudioOutputChannels
 import com.nuvio.tv.data.local.AutoSkipSegmentType
 import com.nuvio.tv.data.local.MpvHardwareDecodeMode
@@ -89,6 +88,10 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setExternalPlayerForwardSubtitles(enabled)
     }
 
+    suspend fun setExternalPlayerSendSkipSegments(enabled: Boolean) {
+        playerSettingsDataStore.setExternalPlayerSendSkipSegments(enabled)
+    }
+
     suspend fun setTrailerEnabled(enabled: Boolean) {
         trailerSettingsDataStore.setEnabled(enabled)
     }
@@ -117,6 +120,10 @@ class PlaybackSettingsViewModel @Inject constructor(
 
     suspend fun setTunnelingEnabled(enabled: Boolean) {
         playerSettingsDataStore.setTunnelingEnabled(enabled)
+    }
+
+    suspend fun setForceOpticalPassthrough(enabled: Boolean) {
+        playerSettingsDataStore.setForceOpticalPassthrough(enabled)
     }
 
     suspend fun setSkipSilence(enabled: Boolean) {
@@ -189,10 +196,6 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setDv7ToDv81PreserveMappingEnabled(enabled)
     }
 
-    suspend fun setStripDvFromHdr10Files(enabled: Boolean) {
-        playerSettingsDataStore.setStripDvFromHdr10Files(enabled)
-    }
-
     suspend fun setDv7HandlingMode(mode: Dv7HandlingMode) {
         playerSettingsDataStore.setDv7HandlingMode(mode)
         // The conversion-mode override only applies when handling is Convert to
@@ -205,6 +208,10 @@ class PlaybackSettingsViewModel @Inject constructor(
 
     suspend fun setDv7LibdoviModeOverride(mode: Int) {
         playerSettingsDataStore.setDv7LibdoviModeOverride(mode)
+    }
+
+    suspend fun setStripHdr10PlusSei(enabled: Boolean) {
+        playerSettingsDataStore.setStripHdr10PlusSei(enabled)
     }
 
     suspend fun setUseLibass(enabled: Boolean) {
@@ -229,6 +236,10 @@ class PlaybackSettingsViewModel @Inject constructor(
 
     suspend fun setSubtitleShowOnlyPreferredLanguages(enabled: Boolean) {
         playerSettingsDataStore.setSubtitleShowOnlyPreferredLanguages(enabled)
+    }
+
+    suspend fun setSubtitleStripSdh(enabled: Boolean) {
+        playerSettingsDataStore.setSubtitleStripSdh(enabled)
     }
 
     suspend fun setSubtitleSize(size: Int) {
@@ -267,10 +278,6 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setSubtitleOrganizationMode(mode)
     }
 
-    suspend fun setAddonSubtitleStartupMode(mode: AddonSubtitleStartupMode) {
-        playerSettingsDataStore.setAddonSubtitleStartupMode(mode)
-    }
-
     // Buffer settings functions
 
     suspend fun setBufferMinBufferMs(ms: Int) {
@@ -292,21 +299,22 @@ class PlaybackSettingsViewModel @Inject constructor(
     @androidx.annotation.OptIn(UnstableApi::class)
     suspend fun setBufferTargetSizeMb(mb: Int) {
         val current = playerSettings.first()
-        if (!current.useParallelConnections) {
+        if (!current.useParallelConnections || current.nuvioPerformanceModeEnabled || current.allowLargeTargetBuffer) {
             playerSettingsDataStore.setBufferTargetSizeMb(mb)
             return
         }
-        val (adjBuffer, adjChunk) = MemoryBudget.enforce(
+        val currentChunkMb = Math.ceil(current.parallelChunkSizeKb / 1024.0).toInt()
+        val (adjBuffer, adjChunkMb) = MemoryBudget.enforce(
             mb,
-            current.parallelChunkSizeMb,
+            currentChunkMb,
             current.parallelConnectionCount
         )
-        if (adjBuffer == mb && adjChunk == current.parallelChunkSizeMb) {
+        if (adjBuffer == mb && adjChunkMb == currentChunkMb) {
             playerSettingsDataStore.setBufferTargetSizeMb(mb)
         } else {
             playerSettingsDataStore.updateMemorySettings(
                 targetBufferSizeMb = adjBuffer,
-                parallelChunkSizeMb = adjChunk
+                parallelChunkSizeKb = adjChunkMb * 1024
             )
         }
     }
@@ -323,19 +331,20 @@ class PlaybackSettingsViewModel @Inject constructor(
     suspend fun resetBufferSettingsToDefaults() {
         playerSettingsDataStore.resetBufferSettingsToDefaults()
         val current = playerSettings.first()
-        if (!current.useParallelConnections) return
+        if (!current.useParallelConnections || current.nuvioPerformanceModeEnabled || current.allowLargeTargetBuffer) return
 
-        val (adjBuffer, adjChunk) = MemoryBudget.enforce(
+        val currentChunkMb = Math.ceil(current.parallelChunkSizeKb / 1024.0).toInt()
+        val (adjBuffer, adjChunkMb) = MemoryBudget.enforce(
             MemoryBudget.defaultBufferSizeMb,
-            current.parallelChunkSizeMb,
+            currentChunkMb,
             current.parallelConnectionCount
         )
-        if (adjChunk != current.parallelChunkSizeMb ||
+        if (adjChunkMb != currentChunkMb ||
             adjBuffer != MemoryBudget.defaultBufferSizeMb
         ) {
             playerSettingsDataStore.updateMemorySettings(
                 targetBufferSizeMb = adjBuffer,
-                parallelChunkSizeMb = adjChunk
+                parallelChunkSizeKb = adjChunkMb * 1024
             )
         }
     }
@@ -355,6 +364,10 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setParallelNetworkEnabled(enabled)
     }
 
+    suspend fun setEnableHttp2(enabled: Boolean) {
+        playerSettingsDataStore.setEnableHttp2(enabled)
+    }
+
     suspend fun setAllowLargeTargetBuffer(enabled: Boolean) {
         playerSettingsDataStore.setAllowLargeTargetBuffer(enabled)
     }
@@ -367,19 +380,24 @@ class PlaybackSettingsViewModel @Inject constructor(
             return
         }
         val current = playerSettings.first()
+        if (current.nuvioPerformanceModeEnabled || current.allowLargeTargetBuffer) {
+            playerSettingsDataStore.setUseParallelConnections(true)
+            return
+        }
         val bufferMb = MemoryBudget.effectiveBufferMb(current.bufferSettings.targetBufferSizeMb)
-        val (adjBuffer, adjChunk) = MemoryBudget.enforce(
+        val currentChunkMb = Math.ceil(current.parallelChunkSizeKb / 1024.0).toInt()
+        val (adjBuffer, adjChunkMb) = MemoryBudget.enforce(
             bufferMb,
-            current.parallelChunkSizeMb,
+            currentChunkMb,
             current.parallelConnectionCount
         )
-        if (adjBuffer == bufferMb && adjChunk == current.parallelChunkSizeMb) {
+        if (adjBuffer == bufferMb && adjChunkMb == currentChunkMb) {
             playerSettingsDataStore.setUseParallelConnections(true)
         } else {
             playerSettingsDataStore.updateMemorySettings(
                 useParallelConnections = true,
                 targetBufferSizeMb = if (adjBuffer != bufferMb) adjBuffer else null,
-                parallelChunkSizeMb = adjChunk
+                parallelChunkSizeKb = adjChunkMb * 1024
             )
         }
     }
@@ -387,30 +405,39 @@ class PlaybackSettingsViewModel @Inject constructor(
     @androidx.annotation.OptIn(UnstableApi::class)
     suspend fun setParallelConnectionCount(count: Int) {
         val current = playerSettings.first()
+        if (current.nuvioPerformanceModeEnabled || current.allowLargeTargetBuffer) {
+            playerSettingsDataStore.setParallelConnectionCount(count)
+            return
+        }
         if (count <= current.parallelConnectionCount) {
             playerSettingsDataStore.setParallelConnectionCount(count)
         } else {
             val bufferMb = MemoryBudget.effectiveBufferMb(current.bufferSettings.targetBufferSizeMb)
             val maxChunk = MemoryBudget.maxChunkMb(bufferMb, count)
-            val newChunkMb = current.parallelChunkSizeMb.coerceAtMost(maxChunk)
-            if (newChunkMb == current.parallelChunkSizeMb) {
+            val currentChunkMb = Math.ceil(current.parallelChunkSizeKb / 1024.0).toInt()
+            val newChunkMb = currentChunkMb.coerceAtMost(maxChunk)
+            if (newChunkMb == currentChunkMb) {
                 playerSettingsDataStore.setParallelConnectionCount(count)
             } else {
                 playerSettingsDataStore.updateMemorySettings(
                     parallelConnectionCount = count,
-                    parallelChunkSizeMb = newChunkMb
+                    parallelChunkSizeKb = newChunkMb * 1024
                 )
             }
         }
     }
 
     @androidx.annotation.OptIn(UnstableApi::class)
-    suspend fun setParallelChunkSizeMb(mb: Int) {
+    suspend fun setParallelChunkSizeKb(kb: Int) {
         val current = playerSettings.first()
+        if (current.nuvioPerformanceModeEnabled || current.allowLargeTargetBuffer) {
+            playerSettingsDataStore.setParallelChunkSizeKb(kb)
+            return
+        }
         val bufferMb = MemoryBudget.effectiveBufferMb(current.bufferSettings.targetBufferSizeMb)
         val maxChunk = MemoryBudget.maxChunkMb(bufferMb, current.parallelConnectionCount)
-        val clampedChunk = mb.coerceAtMost(maxChunk)
-        playerSettingsDataStore.setParallelChunkSizeMb(clampedChunk)
+        val clampedChunkKb = kb.coerceAtMost(maxChunk * 1024)
+        playerSettingsDataStore.setParallelChunkSizeKb(clampedChunkKb)
     }
 
     suspend fun setStreamAutoPlayMode(mode: StreamAutoPlayMode) {
@@ -435,6 +462,10 @@ class PlaybackSettingsViewModel @Inject constructor(
 
     suspend fun setStreamAutoPlayNextEpisodeEnabled(enabled: Boolean) {
         playerSettingsDataStore.setStreamAutoPlayNextEpisodeEnabled(enabled)
+    }
+
+    suspend fun setStreamAutoPlayNextEpisodeFallbackEnabled(enabled: Boolean) {
+        playerSettingsDataStore.setStreamAutoPlayNextEpisodeFallbackEnabled(enabled)
     }
 
     suspend fun setStreamAutoPlayPreferBingeGroupForNextEpisode(enabled: Boolean) {
@@ -483,5 +514,9 @@ class PlaybackSettingsViewModel @Inject constructor(
 
     suspend fun setVodCacheSizeMb(mb: Int) {
         playerSettingsDataStore.setVodCacheSizeMb(mb)
+    }
+
+    suspend fun setNuvioPerformanceModeEnabled(enabled: Boolean) {
+        playerSettingsDataStore.setNuvioPerformanceModeEnabled(enabled)
     }
 }

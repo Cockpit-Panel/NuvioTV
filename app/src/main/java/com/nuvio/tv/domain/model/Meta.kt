@@ -1,6 +1,7 @@
 package com.nuvio.tv.domain.model
 
 import androidx.compose.runtime.Immutable
+import com.nuvio.tv.core.util.isEpisodeReleaseAired
 
 @Immutable
 data class Meta(
@@ -58,30 +59,20 @@ data class Meta(
      * (either via the `available` flag or because its release date is in the future).
      */
     fun watchableEpisodes(): List<Video> {
-        val today = java.time.LocalDate.now()
         val candidates = videos.filter {
             it.season != null && it.episode != null && (it.season ?: 0) > 0
         }
+        fun isFutureRelease(raw: String?): Boolean = isEpisodeReleaseAired(raw) == false
         val unavailableSeasons = candidates.groupBy { it.season }
             .filter { (_, eps) ->
                 val first = eps.minByOrNull { it.episode ?: Int.MAX_VALUE }
                     ?: return@filter false
-                // Exclude if explicitly marked unavailable
                 if (first.available == false) return@filter true
-                // Exclude if release date is in the future
-                val released = first.released?.substringBefore('T')?.trim()
-                if (!released.isNullOrBlank()) {
-                    try {
-                        return@filter java.time.LocalDate.parse(
-                            released,
-                            java.time.format.DateTimeFormatter.ISO_LOCAL_DATE
-                        ).isAfter(today)
-                    } catch (_: java.time.format.DateTimeParseException) { }
-                }
-                false
+                isFutureRelease(first.released)
             }.keys
-        return if (unavailableSeasons.isEmpty()) candidates
-        else candidates.filter { it.season !in unavailableSeasons }
+        return candidates
+            .filter { it.season !in unavailableSeasons }
+            .filter { it.available != false && !isFutureRelease(it.released) }
     }
 }
 
@@ -190,6 +181,8 @@ data class Video(
     val episode: Int?,
     val overview: String?,
     val runtime: Int? = null, // episode runtime in minutes
+    /** Per-episode rating supplied by the addon, when it provides one. */
+    val rating: Double? = null,
     val available: Boolean? = null
 )
 

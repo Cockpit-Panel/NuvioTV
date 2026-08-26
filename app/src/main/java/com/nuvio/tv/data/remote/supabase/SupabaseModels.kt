@@ -1,5 +1,6 @@
 package com.nuvio.tv.data.remote.supabase
 
+import io.github.jan.supabase.auth.user.UserInfo
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
@@ -75,7 +76,8 @@ data class TvLoginExchangeResult(
     @SerialName("access_token") val accessToken: String,
     @SerialName("refresh_token") val refreshToken: String,
     @SerialName("token_type") val tokenType: String? = null,
-    @SerialName("expires_in") val expiresIn: Long? = null
+    @SerialName("expires_in") val expiresIn: Long? = null,
+    val user: UserInfo? = null
 )
 
 @Serializable
@@ -107,25 +109,6 @@ data class SupabaseWatchProgressEvent(
     val position: Long,
     val duration: Long,
     @SerialName("last_watched") val lastWatched: Long
-)
-
-@Serializable
-data class SupabaseLibraryItem(
-    val id: String? = null,
-    @SerialName("user_id") val userId: String? = null,
-    @SerialName("content_id") val contentId: String,
-    @SerialName("content_type") val contentType: String,
-    val name: String = "",
-    val poster: String? = null,
-    @SerialName("poster_shape") val posterShape: String = "POSTER",
-    val background: String? = null,
-    val description: String? = null,
-    @SerialName("release_info") val releaseInfo: String? = null,
-    @SerialName("imdb_rating") val imdbRating: Float? = null,
-    val genres: List<String> = emptyList(),
-    @SerialName("addon_base_url") val addonBaseUrl: String? = null,
-    @SerialName("added_at") val addedAt: Long = 0,
-    @SerialName("profile_id") val profileId: Int = 1
 )
 
 @Serializable
@@ -164,8 +147,19 @@ data class SupabaseProfile(
     @SerialName("uses_primary_plugins") val usesPrimaryPlugins: Boolean = false,
     @SerialName("avatar_id") val avatarId: String? = null,
     @SerialName("avatar_url") val avatarUrl: String? = null,
+    @SerialName("profile_background_id") val profileBackgroundId: String? = null,
+    @SerialName("profile_background_url") val profileBackgroundUrl: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null
+)
+
+@Serializable
+data class SupabaseProfileBackgroundCatalogItem(
+    val id: String,
+    @SerialName("display_name") val displayName: String,
+    @SerialName("storage_path") val storagePath: String,
+    @SerialName("portrait_storage_path") val portraitStoragePath: String? = null,
+    @SerialName("asset_version") val assetVersion: Int
 )
 
 @Serializable
@@ -192,6 +186,17 @@ data class SupabaseAvatarCatalogItem(
 )
 
 @Serializable
+data class SupabaseMemberAvatarCatalogItem(
+    val id: String,
+    @SerialName("display_name") val displayName: String,
+    @SerialName("storage_path") val storagePath: String,
+    val category: String,
+    @SerialName("sort_order") val sortOrder: Int = 0,
+    @SerialName("bg_color") val bgColor: String? = null,
+    @SerialName("asset_version") val assetVersion: Int
+)
+
+@Serializable
 data class SupabaseProfileSettingsBlob(
     @SerialName("profile_id") val profileId: Int = 1,
     @SerialName("settings_json") val settingsJson: JsonObject = buildJsonObject { },
@@ -209,5 +214,12 @@ data class SupabaseCollectionBlob(
 data class SupabaseHomeCatalogSettingsBlob(
     @SerialName("profile_id") val profileId: Int = 1,
     @SerialName("settings_json") val settingsJson: JsonObject = buildJsonObject { },
+    @SerialName("updated_at") val updatedAt: String? = null
+)
+
+@Serializable
+data class SupabaseProviderCredential(
+    val provider: String,
+    @SerialName("credential_json") val credentialJson: JsonObject = buildJsonObject { },
     @SerialName("updated_at") val updatedAt: String? = null
 )

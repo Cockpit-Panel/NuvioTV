@@ -29,8 +29,12 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -61,6 +65,13 @@ fun AccountScreen(
     BackHandler { onBackPress() }
 
     val uiState by viewModel.uiState.collectAsState()
+    var showSignOutConfirmation by remember { mutableStateOf(false) }
+
+    LaunchedEffect(uiState.authState) {
+        if (uiState.authState is AuthState.FullAccount) {
+            viewModel.loadLinkedDevices()
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -148,11 +159,43 @@ fun AccountScreen(
 
             is AuthState.FullAccount -> {
                 item {
-                    SignOutButton(onClick = { viewModel.signOut() })
+                    AccountInfoCard(
+                        label = stringResource(R.string.account_signed_in_as),
+                        value = authState.email
+                    )
+                }
+                item {
+                    LinkedDevicesSection(
+                        devices = uiState.linkedDevices,
+                        onUnlink = { viewModel.unlinkDevice(it) }
+                    )
+                }
+                if (SHOW_SYNC_CODE_FEATURES) {
+                    item {
+                        AccountActionCard(
+                            icon = Icons.Default.VpnKey,
+                            title = stringResource(R.string.sync_generate_title),
+                            description = stringResource(R.string.account_generate_sync_signed_in_desc),
+                            onClick = onNavigateToSyncGenerate
+                        )
+                    }
+                }
+                item {
+                    SignOutButton(onClick = { showSignOutConfirmation = true })
                 }
             }
 
         }
+    }
+
+    if (showSignOutConfirmation) {
+        AccountSignOutConfirmationDialog(
+            onConfirm = {
+                viewModel.signOut()
+                showSignOutConfirmation = false
+            },
+            onDismiss = { showSignOutConfirmation = false }
+        )
     }
 }
 

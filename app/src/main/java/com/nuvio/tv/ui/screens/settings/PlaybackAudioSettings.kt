@@ -74,8 +74,10 @@ internal fun LazyListScope.trailerAndAudioSettingsItems(
     onSetSkipSilence: (Boolean) -> Unit,
     onSetRememberAudioDelayPerDevice: (Boolean) -> Unit,
     onSetTunnelingEnabled: (Boolean) -> Unit,
+    onSetForceOpticalPassthrough: (Boolean) -> Unit,
     onSetDv5ToDv81Enabled: (Boolean) -> Unit,
     onSetDv7ToDv81PreserveMappingEnabled: (Boolean) -> Unit,
+    onSetStripHdr10PlusSei: (Boolean) -> Unit,
     onItemFocused: () -> Unit = {},
     enabled: Boolean = true,
     videoExtraItems: (LazyListScope.() -> Unit)? = null
@@ -127,7 +129,10 @@ internal fun LazyListScope.trailerAndAudioSettingsItems(
 
     item(key = "audio_secondary_preferred_language") {
         val secondaryAudioLangName = playerSettings.secondaryPreferredAudioLanguage?.let { code ->
-            AVAILABLE_SUBTITLE_LANGUAGES.find { it.code == code }?.displayName ?: code
+            when {
+                code.equals(AudioLanguageOption.ORIGINAL, ignoreCase = true) -> stringResource(R.string.audio_lang_original)
+                else -> AVAILABLE_SUBTITLE_LANGUAGES.find { it.code == code }?.displayName ?: code
+            }
         } ?: stringResource(R.string.sub_not_set)
 
         NavigationSettingsItem(
@@ -152,18 +157,18 @@ internal fun LazyListScope.trailerAndAudioSettingsItems(
                 enabled = enabled
             )
         }
+    }
 
-        item(key = "audio_remember_delay_per_device") {
-            ToggleSettingsItem(
-                icon = Icons.Default.Timer,
-                title = stringResource(R.string.audio_remember_delay_per_device),
-                subtitle = stringResource(R.string.audio_remember_delay_per_device_sub),
-                isChecked = playerSettings.rememberAudioDelayPerDevice,
-                onCheckedChange = onSetRememberAudioDelayPerDevice,
-                onFocused = onItemFocused,
-                enabled = enabled
-            )
-        }
+    item(key = "audio_remember_delay_per_device") {
+        ToggleSettingsItem(
+            icon = Icons.Default.Timer,
+            title = stringResource(R.string.audio_remember_delay_per_device),
+            subtitle = stringResource(R.string.audio_remember_delay_per_device_sub),
+            isChecked = playerSettings.rememberAudioDelayPerDevice,
+            onCheckedChange = onSetRememberAudioDelayPerDevice,
+            onFocused = onItemFocused,
+            enabled = enabled
+        )
     }
 
     if (isExoEngine) {
@@ -209,14 +214,16 @@ internal fun LazyListScope.trailerAndAudioSettingsItems(
                 icon = Icons.Default.Tune,
                 title = stringResource(R.string.audio_enable_downmix_title),
                 subtitle = stringResource(R.string.audio_enable_downmix_subtitle),
-                isChecked = playerSettings.downmixEnabled,
+                // Show off outside Prefer app decoders so a persisted value doesn't
+                // read as active (same pattern as optical passthrough / DV8.1-only toggles).
+                isChecked = playerSettings.effectiveDownmixEnabled,
                 onCheckedChange = onSetDownmixEnabled,
                 onFocused = onItemFocused,
-                enabled = enabled
+                enabled = enabled && playerSettings.isPreferAppDecoder
             )
         }
 
-        if (playerSettings.downmixEnabled) {
+        if (playerSettings.effectiveDownmixEnabled) {
             item(key = "audio_number_of_channels") {
                 NavigationSettingsItem(
                     icon = Icons.Default.VolumeUp,
@@ -246,11 +253,29 @@ internal fun LazyListScope.trailerAndAudioSettingsItems(
                 icon = Icons.Default.VolumeUp,
                 title = stringResource(R.string.audio_tunneled),
                 subtitle = stringResource(R.string.audio_tunneled_sub),
-                isChecked = playerSettings.tunnelingEnabled,
+                // Show off when prefer-app decoder is active so a persisted value
+                // doesn't read as active (same pattern as optical passthrough /
+                // DV8.1-only toggles). Downmix also requires prefer-app, so this
+                // covers that path too.
+                isChecked = playerSettings.effectiveTunnelingEnabled,
                 onCheckedChange = onSetTunnelingEnabled,
                 onFocused = onItemFocused,
-                enabled = enabled
+                enabled = enabled && playerSettings.isTunnelingCompatible
             )
+        }
+
+        if (isExoEngine || isMpvEngine) {
+            item(key = "audio_force_optical_passthrough") {
+                ToggleSettingsItem(
+                    icon = Icons.Default.VolumeUp,
+                    title = stringResource(R.string.audio_force_optical_passthrough),
+                    subtitle = stringResource(R.string.audio_force_optical_passthrough_sub),
+                    isChecked = playerSettings.forceOpticalPassthrough && playerSettings.decoderPriority != 0,
+                    onCheckedChange = onSetForceOpticalPassthrough,
+                    onFocused = onItemFocused,
+                    enabled = enabled && playerSettings.decoderPriority != 0
+                )
+            }
         }
     }
 
@@ -309,6 +334,18 @@ internal fun LazyListScope.trailerAndAudioSettingsItems(
                 onCheckedChange = onSetDv5ToDv81Enabled,
                 onFocused = onItemFocused,
                 enabled = enabled && playerSettings.dv7HandlingMode == Dv7HandlingMode.DV81_LIBDOVI
+            )
+        }
+
+        item(key = "audio_strip_hdr10plus") {
+            ToggleSettingsItem(
+                icon = Icons.Default.Tune,
+                title = stringResource(R.string.audio_strip_hdr10plus_title),
+                subtitle = stringResource(R.string.audio_strip_hdr10plus_sub),
+                isChecked = playerSettings.stripHdr10PlusSei,
+                onCheckedChange = onSetStripHdr10PlusSei,
+                onFocused = onItemFocused,
+                enabled = enabled
             )
         }
     }
@@ -378,6 +415,9 @@ internal fun AudioSettingsDialogs(
             title = stringResource(R.string.sub_secondary_lang),
             selectedLanguage = selectedSecondaryLanguage,
             showNoneOption = true,
+            extraOptions = listOf(
+                AudioLanguageOption.ORIGINAL to stringResource(R.string.audio_lang_original)
+            ),
             onLanguageSelected = {
                 onSetSecondaryPreferredAudioLanguage(it)
                 onDismissSecondaryAudioLanguageDialog()

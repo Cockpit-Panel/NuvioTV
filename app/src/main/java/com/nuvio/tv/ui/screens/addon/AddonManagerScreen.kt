@@ -38,6 +38,8 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Card
@@ -45,6 +47,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -67,17 +70,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
@@ -94,6 +101,7 @@ import com.nuvio.tv.domain.model.Addon
 import com.nuvio.tv.domain.model.CatalogDescriptor
 import com.nuvio.tv.domain.model.ExperienceMode
 import com.nuvio.tv.ui.components.LoadingIndicator
+import com.nuvio.tv.ui.components.NuvioDialog
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -113,6 +121,7 @@ private sealed interface AddonExperienceModeState {
 fun AddonManagerScreen(
     viewModel: AddonManagerViewModel = hiltViewModel(),
     showBuiltInHeader: Boolean = true,
+    onBackPress: () -> Unit = {},
     onNavigateToCatalogOrder: () -> Unit = {},
     onNavigateToCollections: () -> Unit = {}
 ) {
@@ -136,6 +145,7 @@ fun AddonManagerScreen(
         return
     }
     val isEssential = experienceMode == ExperienceMode.ESSENTIAL
+    val webConfigMode = viewModel.webConfigMode(experienceMode ?: ExperienceMode.ADVANCED)
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -143,12 +153,26 @@ fun AddonManagerScreen(
     val surfaceFocusRequester = remember { FocusRequester() }
     val installButtonFocusRequester = remember { FocusRequester() }
     val textFieldFocusRequester = remember { FocusRequester() }
+    val deleteDialogFocusRequester = remember { FocusRequester() }
     var isEditing by remember { mutableStateOf(false) }
+    var addonUrlPendingDeletion by remember { mutableStateOf<String?>(null) }
     val hasHomeVisibleCatalogs = remember(uiState.installedAddons) {
         uiState.installedAddons.any { addon ->
             addon.enabled && addon.catalogs.any { catalog -> !catalog.isSearchOnlyCatalog() }
         }
     }
+    val manageFromPhoneSubtitle = if (webConfigMode == com.nuvio.tv.core.server.AddonWebConfigMode.COLLECTIONS_ONLY) {
+        stringResource(R.string.addon_manage_collections_from_phone_subtitle)
+    } else {
+        stringResource(R.string.addon_manage_from_phone_subtitle)
+    }
+    val qrInstruction = if (webConfigMode == com.nuvio.tv.core.server.AddonWebConfigMode.COLLECTIONS_ONLY) {
+        stringResource(R.string.addon_qr_collections_scan_instruction)
+    } else {
+        stringResource(R.string.addon_qr_scan_instruction)
+    }
+
+    BackHandler { onBackPress() }
 
     val defaultRefreshAddonsSubtitle = stringResource(R.string.addon_refresh_default_subtitle)
     val refreshedAddonsSubtitle = stringResource(R.string.addon_refresh_done_subtitle)
@@ -178,9 +202,16 @@ fun AddonManagerScreen(
         }
     }
 
-    LaunchedEffect(uiState.isQrModeActive, uiState.pendingChange, isEditing) {
-        if (!uiState.isQrModeActive && uiState.pendingChange == null && !isEditing) {
+    LaunchedEffect(uiState.isQrModeActive, uiState.pendingChange, isEditing, addonUrlPendingDeletion) {
+        if (!uiState.isQrModeActive && uiState.pendingChange == null && !isEditing && addonUrlPendingDeletion == null) {
             requestInputBarFocus()
+        }
+    }
+
+    LaunchedEffect(addonUrlPendingDeletion) {
+        if (addonUrlPendingDeletion != null) {
+            repeat(2) { withFrameNanos { } }
+            runCatching { deleteDialogFocusRequester.requestFocus() }
         }
     }
 
@@ -191,12 +222,13 @@ fun AddonManagerScreen(
         }
     }
 
-    DisposableEffect(lifecycleOwner, uiState.isQrModeActive, uiState.pendingChange, isEditing) {
+    DisposableEffect(lifecycleOwner, uiState.isQrModeActive, uiState.pendingChange, isEditing, addonUrlPendingDeletion) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME &&
                 !uiState.isQrModeActive &&
                 uiState.pendingChange == null &&
-                !isEditing
+                !isEditing &&
+                addonUrlPendingDeletion == null
             ) {
                 requestInputBarFocus()
             }
@@ -210,6 +242,8 @@ fun AddonManagerScreen(
     DisposableEffect(Unit) {
         onDispose { viewModel.stopQrMode() }
     }
+
+    val addonListScope = rememberCoroutineScope()
 
     Box(
         modifier = Modifier
@@ -282,7 +316,7 @@ fun AddonManagerScreen(
                                             shape = RoundedCornerShape(NuvioTheme.radii.md)
                                         ),
                                         focusedBorder = Border(
-                                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                                             shape = RoundedCornerShape(NuvioTheme.radii.md)
                                         )
                                     ),
@@ -290,6 +324,7 @@ fun AddonManagerScreen(
                                     scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
                                 ) {
                                     Box(modifier = Modifier.padding(NuvioTheme.spacing.md)) {
+                                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                                         BasicTextField(
                                             value = uiState.installUrl,
                                             onValueChange = viewModel::onInstallUrlChange,
@@ -330,6 +365,7 @@ fun AddonManagerScreen(
                                                 innerTextField()
                                             }
                                         )
+                                        }
                                     }
                                 }
 
@@ -421,15 +457,29 @@ fun AddonManagerScreen(
             } else {
                 itemsIndexed(
                     items = uiState.installedAddons,
-                    key = { index, addon -> "${addon.id}:${addon.baseUrl}:$index" }
+                    key = { _, addon -> addon.baseUrl }
                 ) { index, addon ->
+                    val bringIntoViewRequester = remember { BringIntoViewRequester() }
                     AddonCard(
+                        modifier = Modifier.bringIntoViewRequester(bringIntoViewRequester),
                         addon = addon,
                         canMoveUp = index > 0,
                         canMoveDown = index < uiState.installedAddons.lastIndex,
-                        onMoveUp = { viewModel.moveAddonUp(addon.baseUrl) },
-                        onMoveDown = { viewModel.moveAddonDown(addon.baseUrl) },
-                        onRemove = { viewModel.removeAddon(addon.baseUrl) },
+                        onMoveUp = {
+                            viewModel.moveAddonUp(addon.baseUrl)
+                            addonListScope.launch {
+                                kotlinx.coroutines.delay(50)
+                                bringIntoViewRequester.bringIntoView()
+                            }
+                        },
+                        onMoveDown = {
+                            viewModel.moveAddonDown(addon.baseUrl)
+                            addonListScope.launch {
+                                kotlinx.coroutines.delay(50)
+                                bringIntoViewRequester.bringIntoView()
+                            }
+                        },
+                        onRemove = { addonUrlPendingDeletion = addon.baseUrl },
                         onEnabledChange = { enabled -> viewModel.setAddonEnabled(addon.baseUrl, enabled) },
                         isReadOnly = viewModel.isReadOnly,
                         showReorder = !isEssential,
@@ -448,6 +498,35 @@ fun AddonManagerScreen(
                         onConfirm = viewModel::confirmPendingChange,
                         onReject = viewModel::rejectPendingChange
                     )
+                }
+            }
+        }
+
+        addonUrlPendingDeletion?.let { addonUrl ->
+            NuvioDialog(
+                onDismiss = { addonUrlPendingDeletion = null },
+                title = stringResource(R.string.addon_delete_confirm_title),
+                subtitle = stringResource(R.string.addon_delete_confirm_message),
+                suppressFirstKeyUp = false
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md, Alignment.End)
+                ) {
+                    Button(
+                        onClick = { addonUrlPendingDeletion = null },
+                        modifier = Modifier.focusRequester(deleteDialogFocusRequester)
+                    ) {
+                        Text(stringResource(R.string.addon_delete_no))
+                    }
+                    Button(
+                        onClick = {
+                            viewModel.removeAddon(addonUrl)
+                            addonUrlPendingDeletion = null
+                        }
+                    ) {
+                        Text(stringResource(R.string.addon_delete_yes))
+                    }
                 }
             }
         }
@@ -511,6 +590,70 @@ internal fun AddonMessageOverlay(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
+private fun ManageFromPhoneCard(
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    var isFocused by remember { mutableStateOf(false) }
+
+    Surface(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .onFocusChanged { isFocused = it.isFocused },
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = NuvioTheme.colors.BackgroundCard,
+            focusedContainerColor = NuvioTheme.colors.FocusBackground
+        ),
+        border = ClickableSurfaceDefaults.border(
+            focusedBorder = Border(
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
+                shape = RoundedCornerShape(18.dp)
+            )
+        ),
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(18.dp)),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.01f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.QrCode2,
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                    tint = if (isFocused) NuvioTheme.colors.Secondary else NuvioTheme.colors.TextSecondary
+                )
+                Spacer(modifier = Modifier.width(NuvioTheme.spacing.lg))
+                Column {
+                    Text(
+                        text = stringResource(R.string.addon_manage_from_phone_title),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = NuvioTheme.colors.TextPrimary
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = NuvioTheme.colors.TextSecondary
+                    )
+                }
+            }
+            Icon(
+                imageVector = Icons.Default.PhoneAndroid,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = NuvioTheme.colors.TextSecondary
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
 private fun CatalogOrderEntryCard(onClick: () -> Unit) {
     var isFocused by remember { mutableStateOf(false) }
 
@@ -525,7 +668,7 @@ private fun CatalogOrderEntryCard(onClick: () -> Unit) {
         ),
         border = ClickableSurfaceDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                 shape = RoundedCornerShape(18.dp)
             )
         ),
@@ -586,7 +729,7 @@ private fun CollectionsEntryCard(onClick: () -> Unit) {
         ),
         border = ClickableSurfaceDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                 shape = RoundedCornerShape(18.dp)
             )
         ),
@@ -651,7 +794,7 @@ private fun RefreshAddonsEntryCard(
         ),
         border = ClickableSurfaceDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                 shape = RoundedCornerShape(18.dp)
             )
         ),
@@ -765,7 +908,7 @@ internal fun QrCodeOverlay(
                 ),
                 border = ClickableSurfaceDefaults.border(
                     focusedBorder = Border(
-                        border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                        border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                         shape = RoundedCornerShape(50)
                     )
                 ),
@@ -870,7 +1013,7 @@ internal fun ConfirmAddonChangesDialog(
                                     .padding(bottom = NuvioTheme.spacing.xs)
                             )
                             pendingChange.addedUrls.forEach { url ->
-                                val displayName = pendingChange.addedNames[url] ?: stringResource(R.string.type_unknown)
+                                val displayName = pendingChange.addedNames[url] ?: url
                                 Text(
                                     text = "+ $displayName",
                                     style = MaterialTheme.typography.bodySmall,
@@ -893,7 +1036,7 @@ internal fun ConfirmAddonChangesDialog(
                                     .padding(bottom = NuvioTheme.spacing.xs)
                             )
                             pendingChange.removedUrls.forEach { url ->
-                                val displayName = pendingChange.removedNames[url] ?: stringResource(R.string.type_unknown)
+                                val displayName = pendingChange.removedNames[url] ?: url
                                 Text(
                                     text = "- $displayName",
                                     style = MaterialTheme.typography.bodySmall,
@@ -1027,7 +1170,7 @@ internal fun ConfirmAddonChangesDialog(
                             ),
                             border = ClickableSurfaceDefaults.border(
                                 focusedBorder = Border(
-                                    border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                                     shape = RoundedCornerShape(50)
                                 )
                             ),
@@ -1060,7 +1203,7 @@ internal fun ConfirmAddonChangesDialog(
                             ),
                             border = ClickableSurfaceDefaults.border(
                                 focusedBorder = Border(
-                                    border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                                     shape = RoundedCornerShape(50)
                                 )
                             ),
@@ -1082,6 +1225,7 @@ internal fun ConfirmAddonChangesDialog(
 @OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 private fun AddonCard(
+    modifier: Modifier = Modifier,
     addon: Addon,
     canMoveUp: Boolean,
     canMoveDown: Boolean,
@@ -1096,7 +1240,7 @@ private fun AddonCard(
     if (isReadOnly) {
         Surface(
             onClick = { },
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
                 .animateContentSize(),
             colors = ClickableSurfaceDefaults.colors(
@@ -1105,7 +1249,7 @@ private fun AddonCard(
             ),
             border = ClickableSurfaceDefaults.border(
                 focusedBorder = Border(
-                    border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                     shape = RoundedCornerShape(NuvioTheme.radii.md)
                 )
             ),
@@ -1119,7 +1263,7 @@ private fun AddonCard(
         val effectiveToggleFocusRequester = toggleFocusRequester ?: internalToggleFocusRequester
 
         Card(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
                 .animateContentSize()
                 .focusProperties {
@@ -1205,7 +1349,7 @@ private fun AddonCardContent(
                         ),
                         border = ClickableSurfaceDefaults.border(
                             focusedBorder = Border(
-                                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                                 shape = RoundedCornerShape(NuvioTheme.radii.md)
                             )
                         ),

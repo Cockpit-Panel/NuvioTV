@@ -16,6 +16,7 @@
 package com.nuvio.tv.core.player.dvmkv;
 
 import androidx.annotation.Nullable;
+import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.util.UnstableApi;
@@ -37,6 +38,16 @@ public final class DolbyVisionCompatibility {
   @Nullable private static volatile Object mp4DolbyVisionSampleTransformer;
   @Nullable private static volatile Object fragmentedMp4DolbyVisionSampleTransformer;
   @Nullable private static volatile Object tsDolbyVisionNalTransformer;
+
+  private static volatile boolean isHdr10BaseLayerModeActive;
+
+  public static void setHdr10BaseLayerModeActive(boolean active) {
+    isHdr10BaseLayerModeActive = active;
+  }
+
+  public static boolean isHdr10BaseLayerModeActive() {
+    return isHdr10BaseLayerModeActive;
+  }
 
   public static void setMapDv7ToHevcEnabled(boolean enabled) {
     mapDv7ToHevcEnabled = enabled;
@@ -73,6 +84,11 @@ public final class DolbyVisionCompatibility {
     }
     int profile = parseIntOrUnset(parts[1]);
     return profile == 7;
+  }
+
+  public static boolean isStaleContainerDolbyVisionConfig(
+      boolean hasColorInfo, @C.ColorTransfer int colorTransfer) {
+    return hasColorInfo && colorTransfer == C.COLOR_TRANSFER_SDR;
   }
 
   @Nullable

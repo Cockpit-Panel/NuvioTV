@@ -1,9 +1,12 @@
 package com.nuvio.tv
 
 import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -61,12 +64,14 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.RectangleShape
@@ -80,6 +85,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -114,48 +120,65 @@ import coil3.compose.rememberAsyncImagePainter
 import coil3.request.ImageRequest
 import com.nuvio.tv.R
 import com.nuvio.tv.core.auth.AuthManager
-import com.nuvio.tv.core.build.AppFeaturePolicy
+import com.nuvio.tv.core.auth.DeviceSessionRegistration
+import com.nuvio.tv.core.deeplink.DeepLinkHandler
+import com.nuvio.tv.core.deeplink.DeepLinkParser
 import com.nuvio.tv.core.profile.ProfileManager
-import com.nuvio.tv.core.sync.ProfileSettingsSyncService
 import com.nuvio.tv.core.sync.ProfileSyncService
 import com.nuvio.tv.core.sync.StartupSyncService
+import com.nuvio.tv.core.tracking.TrackingProgressRefreshCoordinator
+import com.nuvio.tv.core.tracking.TrackingRefreshIntent
 import com.nuvio.tv.data.local.AppOnboardingDataStore
+import com.nuvio.tv.data.local.AuthSessionNoticeDataStore
 import com.nuvio.tv.data.local.ExperienceModeDataStore
 import com.nuvio.tv.data.local.LayoutPreferenceDataStore
+import com.nuvio.tv.data.local.StartupAuthNotice
 import com.nuvio.tv.data.local.ThemeDataStore
+import com.nuvio.tv.data.repository.MemberAccessRepository
 import com.nuvio.tv.data.remote.supabase.AvatarRepository
-import com.nuvio.tv.data.repository.TraktProgressService
 import com.nuvio.tv.domain.model.AppFont
 import com.nuvio.tv.domain.model.AppTheme
 import com.nuvio.tv.domain.model.AuthState
+import com.nuvio.tv.domain.model.CardDepthStyle
+import com.nuvio.tv.domain.model.CosmeticEntitlement
 import com.nuvio.tv.domain.model.DiscoverLocation
 import com.nuvio.tv.domain.model.ExperienceMode
+import com.nuvio.tv.domain.model.MemberAccess
+import com.nuvio.tv.domain.model.SettingsUiStyle
+import com.nuvio.tv.domain.model.resolveAppTheme
+import com.nuvio.tv.domain.deeplink.AppDeepLink
 import com.nuvio.tv.domain.repository.AddonRepository
 import com.nuvio.tv.ui.components.NuvioScrollDefaults
+import com.nuvio.tv.ui.components.BrandWordmark
+import com.nuvio.tv.ui.components.LocalCardDepthStyle
 import com.nuvio.tv.ui.components.ProfileAvatarCircle
 import com.nuvio.tv.ui.navigation.NuvioNavHost
 import com.nuvio.tv.ui.navigation.Screen
+import com.nuvio.tv.ui.membership.LocalMemberAccess
 import com.nuvio.tv.ui.screens.account.AuthQrSignInScreen
-import com.nuvio.tv.ui.screens.account.AuthSignInScreen
 import com.nuvio.tv.ui.screens.addon.EssentialAddonSetupScreen
 import com.nuvio.tv.ui.screens.profile.ProfileSelectionScreen
 import com.nuvio.tv.ui.theme.NuvioComponents
+import com.nuvio.tv.ui.theme.NuvioLayout
 import com.nuvio.tv.ui.theme.NuvioMotion
 import com.nuvio.tv.ui.theme.NuvioPrimitives
 import com.nuvio.tv.ui.theme.NuvioRadii
 import com.nuvio.tv.ui.theme.NuvioStrokes
 import com.nuvio.tv.ui.theme.NuvioTheme
+import com.nuvio.tv.ui.theme.ThemeColors
+import com.nuvio.tv.ui.theme.accentBrush
 import com.nuvio.tv.ui.util.LocalFastHorizontalNavigationEnabled
 import com.nuvio.tv.ui.util.LocalRecompositionHighlighterEnabled
 import com.nuvio.tv.ui.util.rememberDrawerItemFocusRequesters
 import com.nuvio.tv.updater.UpdateViewModel
-import com.nuvio.tv.updater.ui.UpdatePromptDialog
+import com.nuvio.tv.updater.ui.UpdateBannerHost
 import dagger.hilt.android.AndroidEntryPoint
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
 import java.util.Locale
 import javax.inject.Inject
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -174,6 +197,7 @@ data class DrawerItem(
 
 private data class MainUiPrefs(
     val theme: AppTheme = AppTheme.WHITE,
+    val memberAccess: MemberAccess = MemberAccess.None,
     val font: AppFont = AppFont.INTER,
     val amoledMode: Boolean = false,
     val amoledSurfacesMode: Boolean = false,
@@ -187,7 +211,9 @@ private data class MainUiPrefs(
     val discoverLocation: DiscoverLocation? = null,
     val smoothBringIntoViewEnabled: Boolean = true,
     val fastHorizontalNavigationEnabled: Boolean = false,
-    val composeHighlighterEnabled: Boolean = false
+    val composeHighlighterEnabled: Boolean = false,
+    val settingsUiStyle: SettingsUiStyle = SettingsUiStyle.CLASSIC,
+    val cardDepthStyle: CardDepthStyle = CardDepthStyle()
 )
 
 @AndroidEntryPoint
@@ -203,19 +229,19 @@ class MainActivity : ComponentActivity() {
     lateinit var experienceModeDataStore: ExperienceModeDataStore
 
     @Inject
+    lateinit var memberAccessRepository: MemberAccessRepository
+
+    @Inject
     lateinit var addonRepository: AddonRepository
 
     @Inject
-    lateinit var traktProgressService: TraktProgressService
+    lateinit var trackingProgressRefreshCoordinator: TrackingProgressRefreshCoordinator
 
     @Inject
     lateinit var startupSyncService: StartupSyncService
 
     @Inject
     lateinit var androidTvChannelSyncService: com.nuvio.tv.core.sync.androidtv.AndroidTvChannelSyncService
-
-    @Inject
-    lateinit var profileSettingsSyncService: ProfileSettingsSyncService
 
     @Inject
     lateinit var profileSyncService: ProfileSyncService
@@ -225,6 +251,12 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var authManager: AuthManager
+
+    @Inject
+    lateinit var deviceSessionRegistration: DeviceSessionRegistration
+
+    @Inject
+    lateinit var authSessionNoticeDataStore: AuthSessionNoticeDataStore
 
     @Inject
     lateinit var appOnboardingDataStore: AppOnboardingDataStore
@@ -237,6 +269,12 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var externalPlaybackTracker: com.nuvio.tv.core.player.ExternalPlaybackTracker
+
+    @Inject
+    lateinit var deepLinkHandler: DeepLinkHandler
+
+    private val pendingDeepLinkUrl = MutableStateFlow<String?>(null)
+    private val pendingLaunchIntent = MutableStateFlow<Intent?>(null)
 
     private lateinit var jankStats: JankStats
 
@@ -289,6 +327,16 @@ class MainActivity : ComponentActivity() {
         // Extract extras set by the Continue Watching launcher channel preview programs.
         val launchContentId = intent?.getStringExtra("contentId")
         val launchContentType = intent?.getStringExtra("contentType")
+        val launchMode = intent?.getStringExtra("launchMode")
+        val launchVideoId = intent?.getStringExtra("videoId")
+        val launchName = intent?.getStringExtra("name")
+        val launchPoster = intent?.getStringExtra("poster")
+        val launchBackdrop = intent?.getStringExtra("backdrop")
+        val launchLogo = intent?.getStringExtra("logo")
+        val launchSeason = intent?.getIntExtra("season", -1)?.takeIf { it >= 0 }
+        val launchEpisode = intent?.getIntExtra("episode", -1)?.takeIf { it >= 0 }
+        val launchEpisodeTitle = intent?.getStringExtra("episodeTitle")
+        captureDeepLinkIntent(intent)
 
         setContent {
             var hasSelectedProfileThisSession by rememberSaveable { mutableStateOf(false) }
@@ -299,6 +347,20 @@ class MainActivity : ComponentActivity() {
             }
             val hasSeenAuthQrOnFirstLaunch by hasSeenAuthQrFlow.collectAsState(initial = null)
             val authState by authManager.authState.collectAsState()
+            val context = LocalContext.current
+
+            LaunchedEffect(authSessionNoticeDataStore, context) {
+                authSessionNoticeDataStore.pendingNotice.collect { notice ->
+                    if (notice == StartupAuthNotice.NUVIO) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.auth_notice_nuvio_logged_out),
+                            Toast.LENGTH_LONG
+                        ).show()
+                        authSessionNoticeDataStore.consumeNotice(notice)
+                    }
+                }
+            }
 
             LaunchedEffect(hasSeenAuthQrOnFirstLaunch, authState) {
                 if (hasSeenAuthQrOnFirstLaunch == false && authState is AuthState.FullAccount) {
@@ -340,9 +402,14 @@ class MainActivity : ComponentActivity() {
             }
 
             var avatarCatalog by remember { mutableStateOf(emptyList<com.nuvio.tv.data.remote.supabase.AvatarCatalogItem>()) }
+            val avatarMemberAccess by memberAccessRepository.access.collectAsState()
+            val hasProfileAvatarAccess = avatarMemberAccess.entitlements
+                .includes(CosmeticEntitlement.PROFILE_AVATARS)
 
-            LaunchedEffect(Unit) {
-                avatarCatalog = runCatching { avatarRepository.getAvatarCatalog() }
+            LaunchedEffect(hasProfileAvatarAccess) {
+                avatarCatalog = runCatching {
+                    avatarRepository.getAvatarCatalog(hasProfileAvatarAccess)
+                }
                     .getOrDefault(emptyList())
             }
 
@@ -351,19 +418,31 @@ class MainActivity : ComponentActivity() {
                     ?: activeProfile?.avatarId?.let { avatarRepository.getAvatarImageUrl(it, avatarCatalog) }
             }
 
-            val mainUiPrefsFlow = remember(themeDataStore, layoutPreferenceDataStore, experienceModeDataStore) {
+            val mainUiPrefsFlow = remember(
+                themeDataStore,
+                layoutPreferenceDataStore,
+                experienceModeDataStore,
+                memberAccessRepository
+            ) {
+                val activeThemeFlow = combine(
+                    themeDataStore.selectedThemePreference,
+                    memberAccessRepository.access
+                ) { selectedTheme, memberAccess ->
+                    resolveAppTheme(selectedTheme, memberAccess.entitlements) to memberAccess
+                }
                 // Group flows into two batches to reduce intermediate flow allocations.
                 // Each batch uses a single combine() instead of chaining .combine() calls,
                 // which avoids N intermediate flow objects and redundant emissions on startup.
                 val themeAndExperienceFlow = combine(
-                    themeDataStore.selectedTheme,
+                    activeThemeFlow,
                     themeDataStore.selectedFont,
                     themeDataStore.amoledMode,
                     themeDataStore.amoledSurfacesMode,
                     experienceModeDataStore.mode,
-                ) { theme, font, amoledMode, amoledSurfacesMode, experienceMode ->
+                ) { themeAndAccess, font, amoledMode, amoledSurfacesMode, experienceMode ->
                     MainUiPrefs(
-                        theme = theme,
+                        theme = themeAndAccess.first,
+                        memberAccess = themeAndAccess.second,
                         font = font,
                         amoledMode = amoledMode,
                         amoledSurfacesMode = amoledSurfacesMode,
@@ -391,15 +470,22 @@ class MainActivity : ComponentActivity() {
                     layoutPreferenceDataStore.smoothBringIntoViewEnabled,
                     layoutPreferenceDataStore.fastHorizontalNavigationEnabled,
                     layoutPreferenceDataStore.composeHighlighterEnabled,
-                ) { addonSetupSkipped, smoothBringIntoView, fastHorizontalNav, composeHighlighter ->
+                    themeDataStore.settingsUiStyle,
+                ) { addonSetupSkipped, smoothBringIntoView, fastHorizontalNav, composeHighlighter, settingsUiStyle ->
                     MainUiPrefs(
                         addonSetupSkipped = addonSetupSkipped,
                         smoothBringIntoViewEnabled = smoothBringIntoView,
                         fastHorizontalNavigationEnabled = fastHorizontalNav,
                         composeHighlighterEnabled = composeHighlighter,
+                        settingsUiStyle = settingsUiStyle,
                     )
                 }
-                combine(themeAndExperienceFlow, layoutAndFeaturesFlow, extraFeaturesFlow) { themePrefs, layoutPrefs, extraPrefs ->
+                combine(
+                    themeAndExperienceFlow,
+                    layoutAndFeaturesFlow,
+                    extraFeaturesFlow,
+                    layoutPreferenceDataStore.cardDepthStyle
+                ) { themePrefs, layoutPrefs, extraPrefs, cardDepthStyle ->
                     themePrefs.copy(
                         hasChosenLayout = layoutPrefs.hasChosenLayout,
                         sidebarCollapsed = layoutPrefs.sidebarCollapsed,
@@ -410,6 +496,8 @@ class MainActivity : ComponentActivity() {
                         smoothBringIntoViewEnabled = extraPrefs.smoothBringIntoViewEnabled,
                         fastHorizontalNavigationEnabled = extraPrefs.fastHorizontalNavigationEnabled,
                         composeHighlighterEnabled = extraPrefs.composeHighlighterEnabled,
+                        settingsUiStyle = extraPrefs.settingsUiStyle,
+                        cardDepthStyle = cardDepthStyle
                     )
                 }
             }
@@ -423,7 +511,8 @@ class MainActivity : ComponentActivity() {
                 appTheme = mainUiPrefs.theme,
                 appFont = mainUiPrefs.font,
                 amoledMode = mainUiPrefs.amoledMode,
-                amoledSurfacesMode = mainUiPrefs.amoledSurfacesMode
+                amoledSurfacesMode = mainUiPrefs.amoledSurfacesMode,
+                settingsUiStyle = mainUiPrefs.settingsUiStyle
             ) {
                 val defaultBringIntoViewSpec = LocalBringIntoViewSpec.current
                 val bringIntoViewSpec = if (mainUiPrefs.smoothBringIntoViewEnabled) {
@@ -435,6 +524,8 @@ class MainActivity : ComponentActivity() {
                     LocalBringIntoViewSpec provides bringIntoViewSpec,
                     LocalFastHorizontalNavigationEnabled provides mainUiPrefs.fastHorizontalNavigationEnabled,
                     LocalRecompositionHighlighterEnabled provides (BuildConfig.IS_DEBUG_BUILD && mainUiPrefs.composeHighlighterEnabled),
+                    LocalCardDepthStyle provides mainUiPrefs.cardDepthStyle,
+                    LocalMemberAccess provides mainUiPrefs.memberAccess,
                     com.nuvio.tv.core.player.LocalTrailerPlayerPool provides trailerPlayerPool
                 ) {
                 Surface(
@@ -453,17 +544,26 @@ class MainActivity : ComponentActivity() {
                         return@Surface
                     }
 
+                    if (authState is AuthState.Loading) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(NuvioTheme.colors.Background)
+                        )
+                        return@Surface
+                    }
+
                     if (
                         hasSeenAuthQrOnFirstLaunch == false &&
                         authState !is AuthState.FullAccount &&
                         !onboardingCompletedThisSession
                     ) {
-                        AuthSignInScreen(
-                            onBackPress = {},
-                            onSuccess = {
+                        AuthQrSignInScreen(
+                            onBackPress = { finish() },
+                            onContinue = {
                                 lifecycleScope.launch {
                                     val shouldRunRemoteOnboardingSync =
-                                        authManager.authState.value is AuthState.FullAccount && authManager.supportsFullCloudSync
+                                        authManager.authState.value is AuthState.FullAccount
 
                                     if (shouldRunRemoteOnboardingSync) {
                                         if (onboardingProfileSyncInProgress) return@launch
@@ -530,6 +630,20 @@ class MainActivity : ComponentActivity() {
                         effectiveExperienceMode == ExperienceMode.ESSENTIAL &&
                             installedAddons.orEmpty().isEmpty() &&
                             !mainUiPrefs.addonSetupSkipped
+                    val pendingDeepLink by pendingDeepLinkUrl.collectAsState()
+
+                    LaunchedEffect(pendingDeepLink) {
+                        val url = pendingDeepLink ?: return@LaunchedEffect
+                        val deepLink = DeepLinkParser.parse(url)
+                        if (deepLink is AppDeepLink.AddonInstall && (needsEssentialAddonSetup || !layoutChosen)) {
+                            Toast.makeText(context, context.getString(R.string.addon_installing), Toast.LENGTH_SHORT).show()
+                            val installResult = deepLinkHandler.installAddon(deepLink.manifestUrl)
+                            if (pendingDeepLinkUrl.value == url) {
+                                pendingDeepLinkUrl.value = null
+                            }
+                            Toast.makeText(context, installResult.message, Toast.LENGTH_LONG).show()
+                        }
+                    }
 
                     if (needsEssentialAddonSetup) {
                         EssentialAddonSetupScreen(
@@ -567,14 +681,11 @@ class MainActivity : ComponentActivity() {
                     // the internal onPlaybackEnded path uses. Collected from the root composable
                     // so it survives StreamScreen's self-pop and a process kill (metadata is
                     // recovered from disk and the event replayed).
-                    var lastHandledAutoNextMs by rememberSaveable { mutableStateOf(0L) }
                     LaunchedEffect(navController) {
                         externalPlaybackTracker.autoPlayNext.collect { next ->
-                            // Skip a value replayed after a config change; act only on newer events.
-                            if (next.requestedAtMs <= lastHandledAutoNextMs) {
+                            if (!externalPlaybackTracker.claimAutoPlayNextNavigation(next)) {
                                 return@collect
                             }
-                            lastHandledAutoNextMs = next.requestedAtMs
                             Log.d(
                                 "MainActivity",
                                 "autoPlayNext received: S${next.nextSeason}E${next.nextEpisode} " +
@@ -607,12 +718,101 @@ class MainActivity : ComponentActivity() {
                     // Navigate to content when launched from the Continue Watching channel row.
                     LaunchedEffect(navController) {
                         if (launchContentId != null && launchContentType != null && layoutChosen) {
+                            if (launchMode == "stream" && launchVideoId != null && launchName != null) {
+                                navController.navigate(
+                                    Screen.Stream.createRoute(
+                                        videoId = launchVideoId,
+                                        contentType = launchContentType,
+                                        title = launchName,
+                                        poster = launchPoster,
+                                        backdrop = launchBackdrop,
+                                        logo = launchLogo,
+                                        season = launchSeason,
+                                        episode = launchEpisode,
+                                        episodeName = launchEpisodeTitle,
+                                        contentId = launchContentId,
+                                        contentName = launchName,
+                                        returnToDetailOnBack = launchContentType.equals("series", ignoreCase = true),
+                                        returnToHomeOnBack = true
+                                    )
+                                )
+                            } else {
+                                navController.navigate(
+                                    Screen.Detail.createRoute(
+                                        itemId = launchContentId,
+                                        itemType = launchContentType
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    val pendingLaunch by pendingLaunchIntent.collectAsState()
+                    LaunchedEffect(navController, layoutChosen, pendingLaunch) {
+                        val intent = pendingLaunch ?: return@LaunchedEffect
+                        if (!layoutChosen) return@LaunchedEffect
+                        pendingLaunchIntent.value = null
+                        val contentId = intent.getStringExtra("contentId") ?: return@LaunchedEffect
+                        val contentType = intent.getStringExtra("contentType") ?: return@LaunchedEffect
+                        val videoId = intent.getStringExtra("videoId")
+                        val name = intent.getStringExtra("name")
+                        if (videoId != null && name != null) {
                             navController.navigate(
-                                Screen.Detail.createRoute(
-                                    itemId = launchContentId,
-                                    itemType = launchContentType
+                                Screen.Stream.createRoute(
+                                    videoId = videoId,
+                                    contentType = contentType,
+                                    title = name,
+                                    poster = intent.getStringExtra("poster"),
+                                    backdrop = intent.getStringExtra("backdrop"),
+                                    logo = intent.getStringExtra("logo"),
+                                    season = intent.getIntExtra("season", -1).takeIf { it >= 0 },
+                                    episode = intent.getIntExtra("episode", -1).takeIf { it >= 0 },
+                                    episodeName = intent.getStringExtra("episodeTitle"),
+                                    contentId = contentId,
+                                    contentName = name,
+                                    returnToDetailOnBack = contentType.equals("series", ignoreCase = true),
+                                    returnToHomeOnBack = true
                                 )
                             )
+                        } else {
+                            navController.navigate(
+                                Screen.Detail.createRoute(
+                                    itemId = contentId,
+                                    itemType = contentType
+                                )
+                            )
+                        }
+                    }
+
+                    LaunchedEffect(navController, layoutChosen, pendingDeepLink) {
+                        val url = pendingDeepLink ?: return@LaunchedEffect
+                        if (!layoutChosen) return@LaunchedEffect
+                        when (val deepLink = DeepLinkParser.parse(url)) {
+                            is AppDeepLink.Meta -> {
+                                pendingDeepLinkUrl.value = null
+                                navController.navigate(
+                                    Screen.Detail.createRoute(
+                                        itemId = deepLink.id,
+                                        itemType = deepLink.type
+                                    )
+                                ) {
+                                    launchSingleTop = true
+                                }
+                            }
+                            is AppDeepLink.AddonInstall -> {
+                                navController.navigate(Screen.AddonManager.route) {
+                                    launchSingleTop = true
+                                }
+                                Toast.makeText(context, context.getString(R.string.addon_installing), Toast.LENGTH_SHORT).show()
+                                val installResult = deepLinkHandler.installAddon(deepLink.manifestUrl)
+                                if (pendingDeepLinkUrl.value == url) {
+                                    pendingDeepLinkUrl.value = null
+                                }
+                                Toast.makeText(context, installResult.message, Toast.LENGTH_LONG).show()
+                            }
+                            null -> {
+                                pendingDeepLinkUrl.value = null
+                            }
                         }
                     }
 
@@ -642,7 +842,6 @@ class MainActivity : ComponentActivity() {
                             add(Screen.Search.route)
                             add(Screen.Library.route)
                             add(Screen.Settings.route)
-                            add(Screen.AddonManager.route)
                             if (discoverLocation == DiscoverLocation.IN_SIDEBAR) {
                                 add(Screen.Discover.route)
                             }
@@ -653,14 +852,12 @@ class MainActivity : ComponentActivity() {
                     val strNavDiscover = stringResource(R.string.nav_discover)
                     val strNavSearch = stringResource(R.string.nav_search)
                     val strNavLibrary = stringResource(R.string.nav_library)
-                    val strNavAddons = stringResource(R.string.nav_addons)
                     val strNavSettings = stringResource(R.string.nav_settings)
                     val drawerItems = remember(
                         strNavHome,
                         strNavDiscover,
                         strNavSearch,
                         strNavLibrary,
-                        strNavAddons,
                         strNavSettings,
                         discoverLocation
                     ) {
@@ -697,13 +894,6 @@ class MainActivity : ComponentActivity() {
                             )
                             add(
                                 DrawerItem(
-                                    route = Screen.AddonManager.route,
-                                    label = strNavAddons,
-                                    iconRes = R.raw.sidebar_plugin
-                                )
-                            )
-                            add(
-                                DrawerItem(
                                     route = Screen.Settings.route,
                                     label = strNavSettings,
                                     iconRes = R.raw.sidebar_settings
@@ -716,80 +906,81 @@ class MainActivity : ComponentActivity() {
                     }?.route
                     val selectedDrawerItem = drawerItems.firstOrNull { it.route == selectedDrawerRoute } ?: drawerItems.first()
 
-                    if (modernSidebarEnabled) {
-                        ModernSidebarScaffold(
-                            navController = navController,
-                            startDestination = startDestination,
-                            currentRoute = currentRoute,
-                            rootRoutes = rootRoutes,
-                            drawerItems = drawerItems,
-                            selectedDrawerRoute = selectedDrawerRoute,
-                            selectedDrawerItem = selectedDrawerItem,
-                            sidebarCollapsed = sidebarCollapsed,
-                            modernSidebarBlurEnabled = modernSidebarBlurEnabled,
-                            hideBuiltInHeaders = hideBuiltInHeadersForFloatingPill,
-                            activeProfileName = activeProfile?.name ?: "",
-                            activeProfileColorHex = activeProfile?.avatarColorHex ?: "#1E88E5",
-                            activeProfileAvatarImageUrl = activeProfileAvatarImageUrl,
-                            showProfileSelector = profiles.size > 1,
-                            onSwitchProfile = { hasSelectedProfileThisSession = false },
-                            onNavigate = { optimisticRoute = it },
-                            onExitApp = {
-                                finishAffinity()
-                                finishAndRemoveTask()
-                            }
-                        )
-                    } else {
-                        LegacySidebarScaffold(
-                            navController = navController,
-                            startDestination = startDestination,
-                            currentRoute = currentRoute,
-                            rootRoutes = rootRoutes,
-                            drawerItems = drawerItems,
-                            selectedDrawerRoute = selectedDrawerRoute,
-                            sidebarCollapsed = sidebarCollapsed,
-                            hideBuiltInHeaders = false,
-                            activeProfileName = activeProfile?.name ?: "",
-                            activeProfileColorHex = activeProfile?.avatarColorHex ?: "#1E88E5",
-                            activeProfileAvatarImageUrl = activeProfileAvatarImageUrl,
-                            showProfileSelector = profiles.size > 1,
-                            onSwitchProfile = { hasSelectedProfileThisSession = false },
-                            onNavigate = { optimisticRoute = it },
-                            onExitApp = {
-                                finishAffinity()
-                                finishAndRemoveTask()
-                            }
-                        )
-                    }
+                    val updateViewModel: UpdateViewModel = hiltViewModel(this@MainActivity)
+                    val updateState by updateViewModel.uiState.collectAsState()
+                    val updateBannerState = updateState.copy(
+                        showBanner = updateState.showBanner && currentRoute?.startsWith("player/") != true
+                    )
 
-                    if (AppFeaturePolicy.inAppUpdatesEnabled && !BuildConfig.IS_DEBUG_BUILD) {
-                        val updateViewModel: UpdateViewModel = hiltViewModel(this@MainActivity)
-                        val updateState by updateViewModel.uiState.collectAsState()
-                        UpdatePromptDialog(
-                            state = updateState,
-                            onDismiss = { updateViewModel.dismissDialog() },
-                            onDownload = { updateViewModel.downloadUpdate() },
-                            onInstall = { updateViewModel.installUpdateOrRequestPermission() },
-                            onIgnore = { updateViewModel.ignoreThisVersion() },
-                            onOpenUnknownSources = { updateViewModel.openUnknownSourcesSettings() }
-                        )
-                    }
+                    UpdateBannerHost(
+                        state = updateBannerState,
+                        onDismissBanner = updateViewModel::dismissBanner,
+                        onDownload = updateViewModel::downloadUpdate,
+                        onInstall = updateViewModel::installUpdateOrRequestPermission,
+                        onDismissUnknownSources = updateViewModel::dismissUnknownSourcesDialog,
+                        onOpenUnknownSources = updateViewModel::openUnknownSourcesSettings,
+                        onFeedbackShown = updateViewModel::consumeFeedbackMessage
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            if (modernSidebarEnabled) {
+                                ModernSidebarScaffold(
+                                    navController = navController,
+                                    startDestination = startDestination,
+                                    currentRoute = currentRoute,
+                                    rootRoutes = rootRoutes,
+                                    drawerItems = drawerItems,
+                                    selectedDrawerRoute = selectedDrawerRoute,
+                                    selectedDrawerItem = selectedDrawerItem,
+                                    sidebarCollapsed = sidebarCollapsed,
+                                    modernSidebarBlurEnabled = modernSidebarBlurEnabled,
+                                    hideBuiltInHeaders = hideBuiltInHeadersForFloatingPill,
+                                    activeProfileName = activeProfile?.name ?: "",
+                                    activeProfileColorHex = activeProfile?.avatarColorHex ?: "#1E88E5",
+                                    activeProfileAvatarImageUrl = activeProfileAvatarImageUrl,
+                                    showProfileSelector = profiles.size > 1,
+                                    onSwitchProfile = { hasSelectedProfileThisSession = false },
+                                    onNavigate = { optimisticRoute = it },
+                                    onExitApp = {
+                                        finishAffinity()
+                                        finishAndRemoveTask()
+                                    }
+                                )
+                            } else {
+                                LegacySidebarScaffold(
+                                    navController = navController,
+                                    startDestination = startDestination,
+                                    currentRoute = currentRoute,
+                                    rootRoutes = rootRoutes,
+                                    drawerItems = drawerItems,
+                                    selectedDrawerRoute = selectedDrawerRoute,
+                                    sidebarCollapsed = sidebarCollapsed,
+                                    hideBuiltInHeaders = false,
+                                    activeProfileName = activeProfile?.name ?: "",
+                                    activeProfileColorHex = activeProfile?.avatarColorHex ?: "#1E88E5",
+                                    activeProfileAvatarImageUrl = activeProfileAvatarImageUrl,
+                                    showProfileSelector = profiles.size > 1,
+                                    onSwitchProfile = { hasSelectedProfileThisSession = false },
+                                    onNavigate = { optimisticRoute = it },
+                                    onExitApp = {
+                                        finishAffinity()
+                                        finishAndRemoveTask()
+                                    }
+                                )
+                            }
 
-                    // Loader shown while an external episode auto-advances. Drawn last (on top
-                    // of the NavHost) to hide the app cold-starting while the next source resolves.
-                    val autoNextOverlay by externalPlaybackTracker.autoNextOverlay.collectAsState()
-                    autoNextOverlay?.let { ov ->
-                        BackHandler(enabled = true) {
-                            externalPlaybackTracker.dismissAutoNextOverlay()
+                            val autoNextOverlay by externalPlaybackTracker.autoNextOverlay.collectAsState()
+                            autoNextOverlay?.let { ov ->
+                                com.nuvio.tv.ui.screens.player.LoadingOverlay(
+                                    visible = true,
+                                    backdropUrl = ov.backdrop,
+                                    logoUrl = ov.logo,
+                                    title = ov.title,
+                                    message = ov.message ?: stringResource(R.string.external_auto_next_loading),
+                                    progress = ov.progress,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                         }
-                        com.nuvio.tv.ui.screens.player.LoadingOverlay(
-                            visible = true,
-                            backdropUrl = ov.backdrop,
-                            logoUrl = ov.logo,
-                            title = ov.title,
-                            message = stringResource(R.string.external_auto_next_loading),
-                            modifier = Modifier.fillMaxSize()
-                        )
                     }
                 }
             }
@@ -809,20 +1000,60 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (::jankStats.isInitialized) jankStats.isTrackingEnabled = true
-        startupSyncService.requestForegroundSync()
+        memberAccessRepository.refreshIfStale()
         lifecycleScope.launch {
-            if (isFirstResumeAfterCreate) {
-                isFirstResumeAfterCreate = false
-                traktProgressService.invalidateAndRefresh()
-            } else {
-                traktProgressService.refreshNow()
-            }
+            deviceSessionRegistration.requestForegroundRegistration()
+            startupSyncService.requestForegroundSync()
         }
+        lifecycleScope.launch {
+            val refreshIntent = if (isFirstResumeAfterCreate) {
+                isFirstResumeAfterCreate = false
+                TrackingRefreshIntent.INVALIDATED
+            } else {
+                TrackingRefreshIntent.AUTOMATIC
+            }
+            trackingProgressRefreshCoordinator.refreshConnected(refreshIntent)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        captureDeepLinkIntent(intent)
+        captureLaunchIntent(intent)
+    }
+
+    private fun captureDeepLinkIntent(intent: Intent?) {
+        val url = intent?.dataString?.trim()?.takeIf(String::isNotBlank) ?: return
+        pendingDeepLinkUrl.value = url
+    }
+
+    private fun captureLaunchIntent(intent: Intent?) {
+        val contentId = intent?.getStringExtra("contentId") ?: return
+        val launchMode = intent.getStringExtra("launchMode") ?: return
+        if (launchMode != "stream") return
+        pendingLaunchIntent.value = intent
     }
 
     override fun onPause() {
         super.onPause()
         if (::jankStats.isInitialized) jankStats.isTrackingEnabled = false
+    }
+
+    // Intercept Back at the Activity level, before any Compose BackHandler, so the auto-next loader
+    // can always be dismissed. Compose back-dispatch ordering kept putting the destination screen's
+    // handler above the loader's, so Back never reached it.
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK &&
+            externalPlaybackTracker.autoNextOverlay.value != null
+        ) {
+            if (event.action == KeyEvent.ACTION_UP) {
+                Log.d("ExtAutoNext", "dispatchKeyEvent BACK -> dismissAutoNextOverlay (loader showing)")
+                externalPlaybackTracker.dismissAutoNextOverlay()
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onStart() {
@@ -832,12 +1063,14 @@ class MainActivity : ComponentActivity() {
         // tracked; onActivityResult keeps it for a completion or dismisses it otherwise.
         externalPlaybackTracker.raiseAutoNextOverlayOnReturn()
         super.onStart()
-        profileSettingsSyncService.requestForegroundPull()
+        startupSyncService.startPeriodicSurfacePulls()
         androidTvChannelSyncService.onForegroundChanged(true)
     }
 
     override fun onStop() {
+        externalPlaybackTracker.onExternalPlayerCoveredApp()
         super.onStop()
+        startupSyncService.stopPeriodicSurfacePulls()
         // App going to background (e.g. user returning to the launcher): reconcile the
         // Continue Watching channel once so Projectivy repaints it with fresh progress.
         androidTvChannelSyncService.onForegroundChanged(false)
@@ -891,6 +1124,7 @@ private fun LegacySidebarScaffold(
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val drawerItemFocusRequesters = rememberDrawerItemFocusRequesters(drawerItems)
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val showSidebar = currentRoute in rootRoutes
 
     LaunchedEffect(currentRoute) {
@@ -1002,10 +1236,7 @@ private fun LegacySidebarScaffold(
                                 val profileLabelStart = 60.dp
                                 val profileGapAfterAvatar =
                                     (profileLabelStart - profileLeadingInset - profileAvatarSize).coerceAtLeast(NuvioTheme.spacing.none)
-                                val profileBgColor by animateColorAsState(
-                                    targetValue = if (isProfileFocused) NuvioTheme.colors.FocusBackground else Color.Transparent,
-                                    label = "legacyProfileItemBg"
-                                )
+                                val profileBgColor = if (isProfileFocused) NuvioTheme.colors.FocusBackground else Color.Transparent
                                 Box(
                                     modifier = Modifier.fillMaxWidth(),
                                     contentAlignment = Alignment.Center
@@ -1027,7 +1258,8 @@ private fun LegacySidebarScaffold(
                                             name = activeProfileName,
                                             colorHex = activeProfileColorHex,
                                             size = profileAvatarSize,
-                                            avatarImageUrl = activeProfileAvatarImageUrl
+                                            avatarImageUrl = activeProfileAvatarImageUrl,
+                                            imageCrossfade = false
                                         )
                                         Spacer(modifier = Modifier.width(profileGapAfterAvatar))
                                         Text(
@@ -1041,8 +1273,7 @@ private fun LegacySidebarScaffold(
                                     }
                                 }
                             } else {
-                                Image(
-                                    painter = painterResource(id = R.drawable.app_logo_wordmark),
+                                BrandWordmark(
                                     contentDescription = stringResource(R.string.app_name),
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -1069,6 +1300,7 @@ private fun LegacySidebarScaffold(
                                     selected = selectedDrawerRoute == item.route,
                                     expanded = isExpanded,
                                     onClick = {
+                                        keyboardController?.hide()
                                         onNavigate(item.route)
                                         navigateToDrawerRoute(
                                             navController = navController,
@@ -1092,7 +1324,11 @@ private fun LegacySidebarScaffold(
         }
     ) {
         val contentStartPadding by animateDpAsState(
-            targetValue = if (showSidebar) closedDrawerWidth else NuvioTheme.spacing.none,
+            targetValue = if (showSidebar && !sidebarCollapsed) {
+                NuvioLayout.tokens.sidebarContentOffset
+            } else {
+                NuvioTheme.spacing.none
+            },
             animationSpec = tween(NuvioMotion.tokens.durations.medium),
             label = "contentStartPadding"
         )
@@ -1172,6 +1408,11 @@ private fun LegacySidebarButton(
         },
         label = "legacySidebarItemIconTint"
     )
+    val selectedCollapsedIconBrush = if (selected && !expanded) {
+        ThemeColors.getColorPalette(NuvioTheme.currentTheme).accentBrush()
+    } else {
+        null
+    }
     val itemScale by animateFloatAsState(
         targetValue = if (isFocused && expanded) 1.1f else 1f,
         animationSpec = tween(durationMillis = NuvioMotion.tokens.durations.fast, easing = NuvioMotion.tokens.easings.standard),
@@ -1208,6 +1449,7 @@ private fun LegacySidebarButton(
             iconRes = iconRes,
             icon = icon,
             tint = iconTint,
+            brush = selectedCollapsedIconBrush,
             modifier = Modifier
                 .size(NuvioComponents.tokens.sidebar.iconSize)
                 .align(Alignment.CenterStart)
@@ -1220,7 +1462,6 @@ private fun LegacySidebarButton(
                 textAlign = TextAlign.Start,
                 modifier = Modifier
                     .align(Alignment.CenterStart)
-                    .fillMaxWidth()
                     .padding(start = 54.dp, end = 14.dp)
             )
         }
@@ -1257,6 +1498,7 @@ private fun ModernSidebarScaffold(
     val isRtl = androidx.compose.ui.platform.LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
     val contentFocusRequester = remember { FocusRequester() }
     val drawerItemFocusRequesters = rememberDrawerItemFocusRequesters(drawerItems)
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     var isSidebarExpanded by remember { mutableStateOf(false) }
     var sidebarCollapsePending by remember { mutableStateOf(false) }
@@ -1591,6 +1833,7 @@ private fun ModernSidebarScaffold(
                         drawerItemFocusRequesters = drawerItemFocusRequesters,
                         onDrawerItemFocused = { focusedDrawerIndex = it },
                         onDrawerItemClick = { targetRoute ->
+                            keyboardController?.hide()
                             onNavigate(targetRoute)
                             navigateToDrawerRoute(
                                 navController = navController,
@@ -1756,7 +1999,12 @@ private fun navigateToDrawerRoute(
     if (currentRoute == targetRoute) {
         if (targetRoute == Screen.Home.route) {
             // Scroll Home to top by clearing saved focus/scroll state on the ViewModel.
-            val homeEntry = navController.getBackStackEntry(Screen.Home.route)
+            val homeEntry = try {
+                navController.getBackStackEntry(Screen.Home.route)
+            } catch (_: IllegalArgumentException) {
+                // "home" not yet on the back stack (e.g. nav graph not fully initialized).
+                return
+            }
             val homeViewModel = androidx.lifecycle.ViewModelProvider(homeEntry)[com.nuvio.tv.ui.screens.home.HomeViewModel::class.java]
             homeViewModel.requestScrollToTop()
         }
@@ -1785,21 +2033,35 @@ private fun DrawerItemIcon(
     iconRes: Int?,
     icon: ImageVector?,
     modifier: Modifier = Modifier,
-    tint: Color = androidx.tv.material3.LocalContentColor.current
+    tint: Color = androidx.tv.material3.LocalContentColor.current,
+    brush: Brush? = null
 ) {
+    val iconModifier = if (brush == null) {
+        modifier
+    } else {
+        modifier
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .drawWithCache {
+                onDrawWithContent {
+                    drawContent()
+                    drawRect(brush = brush, blendMode = BlendMode.SrcIn)
+                }
+            }
+    }
+    val iconTint = if (brush == null) tint else Color.White
     when {
         icon != null -> Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = tint,
-            modifier = modifier
+            tint = iconTint,
+            modifier = iconModifier
         )
 
         iconRes != null -> Icon(
             painter = rememberRawSvgPainter(iconRes),
             contentDescription = null,
-            tint = tint,
-            modifier = modifier
+            tint = iconTint,
+            modifier = iconModifier
         )
     }
 }

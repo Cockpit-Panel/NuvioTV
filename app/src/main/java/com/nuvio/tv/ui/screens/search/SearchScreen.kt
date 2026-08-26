@@ -43,6 +43,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.focusGroup
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Explore
@@ -67,6 +68,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
@@ -74,6 +76,9 @@ import com.nuvio.tv.ui.util.recompositionHighlighter
 import com.nuvio.tv.ui.util.dpadRepeatThrottle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
+import com.nuvio.tv.ui.util.RtlKeyUtils
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -94,6 +99,7 @@ import com.nuvio.tv.ui.components.LoadingIndicator
 import com.nuvio.tv.ui.components.PosterCardDefaults
 import com.nuvio.tv.ui.components.PosterCardStyle
 import com.nuvio.tv.domain.model.DiscoverLocation
+import com.nuvio.tv.domain.model.stableKey
 import android.view.inputmethod.CompletionInfo
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.ui.platform.LocalView
@@ -102,6 +108,9 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import androidx.compose.ui.res.stringResource
 import com.nuvio.tv.R
+
+/** Skeleton rows shown while a search is pending, matching the two mobile renders. */
+private const val SEARCH_SKELETON_ROW_COUNT = 2
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -148,7 +157,8 @@ fun SearchScreen(
             pendingFocusMoveToResultsQuery = recognized
             pendingFocusMoveSawSearching = false
             pendingFocusMoveHadExistingSearchRows =
-                uiState.submittedQuery.trim().length >= 2 && uiState.catalogRows.any { it.items.isNotEmpty() }
+                uiState.submittedQuery.trim().length >= MIN_SEARCH_QUERY_LENGTH &&
+                    uiState.catalogRows.any { it.items.isNotEmpty() }
         } else {
             Toast.makeText(context, strVoiceNoSpeech, Toast.LENGTH_SHORT).show()
         }
@@ -270,11 +280,8 @@ fun SearchScreen(
         }
     }
 
-    val posterCardStyle = remember(uiState.posterCardWidthDp, uiState.posterCardCornerRadiusDp) {
-        val computedHeightDp = (uiState.posterCardWidthDp * 1.5f).roundToInt()
+    val posterCardStyle = remember(uiState.posterCardCornerRadiusDp) {
         PosterCardStyle(
-            width = uiState.posterCardWidthDp.dp,
-            height = computedHeightDp.dp,
             cornerRadius = uiState.posterCardCornerRadiusDp.dp,
             focusedBorderWidth = PosterCardDefaults.Style.focusedBorderWidth,
             focusedScale = PosterCardDefaults.Style.focusedScale
@@ -295,7 +302,7 @@ fun SearchScreen(
     // Clean up stale keys when the catalog rows change.
     val visibleRowKeys = remember(uiState.catalogRows) {
         uiState.catalogRows.mapTo(mutableSetOf()) {
-            "${it.addonId}_${it.apiType}_${it.catalogId}"
+            it.stableKey()
         }
     }
     // Stable list of non-empty catalog rows — mirrors ClassicHomeContent's
@@ -310,14 +317,20 @@ fun SearchScreen(
         searchRowFocusedItemIndex.keys.retainAll(visibleRowKeys)
     }
 
-    val isDiscoverMode = remember(uiState.discoverLocation, trimmedSubmittedQuery) {
-        uiState.discoverLocation == DiscoverLocation.IN_SEARCH && trimmedSubmittedQuery.isEmpty()
+    val isDiscoverMode = remember(uiState.discoverLocation, trimmedQuery, trimmedSubmittedQuery) {
+        shouldShowDiscoverInSearch(
+            discoverLocation = uiState.discoverLocation,
+            query = trimmedQuery,
+            submittedQuery = trimmedSubmittedQuery
+        )
     }
     LaunchedEffect(isDiscoverMode) {
         if (isDiscoverMode) viewModel.ensureDiscoverLoaded()
     }
     val hasPendingUnsubmittedQuery = remember(isDiscoverMode, trimmedQuery, trimmedSubmittedQuery) {
-        !isDiscoverMode && trimmedQuery.length >= 2 && trimmedQuery != trimmedSubmittedQuery
+        !isDiscoverMode &&
+            trimmedQuery.length >= MIN_SEARCH_QUERY_LENGTH &&
+            trimmedQuery != trimmedSubmittedQuery
     }
     val showRecentSearches = remember(
         trimmedQuery,
@@ -332,16 +345,22 @@ fun SearchScreen(
         trimmedSubmittedQuery,
         uiState.catalogRows
     ) {
-        if (isDiscoverMode) false else trimmedSubmittedQuery.length >= 2 && uiState.catalogRows.any { it.items.isNotEmpty() }
+        if (isDiscoverMode) {
+            false
+        } else {
+            trimmedSubmittedQuery.length >= MIN_SEARCH_QUERY_LENGTH &&
+                uiState.catalogRows.any { it.items.isNotEmpty() }
+        }
     }
     val submitCurrentQuery: (String) -> Unit = { submittedQuery ->
         viewModel.onEvent(SearchEvent.SubmitSearch)
         focusResults = false
-        if (submittedQuery.length >= 2) {
+        if (submittedQuery.length >= MIN_SEARCH_QUERY_LENGTH) {
             pendingFocusMoveToResultsQuery = submittedQuery
             pendingFocusMoveSawSearching = false
             pendingFocusMoveHadExistingSearchRows =
-                trimmedSubmittedQuery.length >= 2 && uiState.catalogRows.any { row -> row.items.isNotEmpty() }
+                trimmedSubmittedQuery.length >= MIN_SEARCH_QUERY_LENGTH &&
+                    uiState.catalogRows.any { row -> row.items.isNotEmpty() }
         } else {
             pendingFocusMoveToResultsQuery = null
             pendingFocusMoveSawSearching = false
@@ -351,7 +370,7 @@ fun SearchScreen(
     val handleQueryChanged: (String) -> Unit = { nextQuery ->
         val previousQuery = uiState.query.trim()
         val trimmedNextQuery = nextQuery.trim()
-        val selectedSuggestion = trimmedNextQuery.length >= 2 &&
+        val selectedSuggestion = trimmedNextQuery.length >= MIN_SEARCH_QUERY_LENGTH &&
             trimmedNextQuery != trimmedSubmittedQuery &&
             uiState.suggestions.any { it.equals(trimmedNextQuery, ignoreCase = true) } &&
             trimmedNextQuery.startsWith(previousQuery, ignoreCase = true) &&
@@ -436,6 +455,7 @@ fun SearchScreen(
         imm.displayCompletions(view, completions)
     }
 
+    var isScreenActive by remember { mutableStateOf(true) }
     val latestPendingDiscoverRestore by rememberUpdatedState(pendingDiscoverRestoreOnResume)
     val latestShouldKeepSearchFocus by rememberUpdatedState(
         focusResults || uiState.isSearching || isVoiceListening
@@ -444,6 +464,7 @@ fun SearchScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                isScreenActive = true
                 if (latestPendingDiscoverRestore) {
                     restoreDiscoverFocus = true
                     pendingDiscoverRestoreOnResume = false
@@ -463,6 +484,9 @@ fun SearchScreen(
                         }
                     }
                 }
+            } else if (event == Lifecycle.Event.ON_PAUSE) {
+                isScreenActive = false
+                keyboardController?.hide()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -476,12 +500,20 @@ fun SearchScreen(
             .fillMaxSize(),
         contentAlignment = Alignment.TopCenter
     ) {
-        if (isDiscoverMode) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = 10.dp)
-            ) {
+        val listState = rememberLazyListState()
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .recompositionHighlighter()
+                .dpadRepeatThrottle(),
+            state = listState,
+            contentPadding = PaddingValues(
+                top = if (isDiscoverMode) 10.dp else NuvioTheme.spacing.lg,
+                bottom = NuvioTheme.spacing.lg
+            ),
+            verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.lg)
+        ) {
+            item(key = "search_input") {
                 SearchInputField(
                     query = uiState.query,
                     canMoveToResults = canMoveToResults,
@@ -496,33 +528,36 @@ fun SearchScreen(
                     isVoiceListening = isVoiceListening,
                     voiceRmsLevel = voiceRmsLevel,
                     onVoiceSearch = launchVoiceSearch,
-                    onMoveToResults = { focusResults = true },
+                    onMoveToResults = {
+                        // D-pad down from the text field is the user's confirmation that the
+                        // live-search results are useful, even before a particular card opens.
+                        viewModel.onEvent(SearchEvent.RememberSearchFromTextInput)
+                        focusResults = true
+                    },
                     onOpenDiscover = onOpenDiscover,
                     showDiscoverButton = uiState.discoverLocation == DiscoverLocation.IN_SEARCH,
                     keyboardController = keyboardController,
-                    clearHistoryFocusRequester = if (showRecentSearches) recentClearHistoryFocusRequester else null
+                    clearHistoryFocusRequester = if (showRecentSearches) recentClearHistoryFocusRequester else null,
+                    isScreenActive = isScreenActive
                 )
+            }
 
-                Spacer(modifier = Modifier.height(NuvioTheme.spacing.md))
-
+            if (isDiscoverMode) {
                 if (showRecentSearches) {
-                    RecentSearchesSection(
-                        recentSearches = uiState.recentSearches,
-                        onSearchSelected = submitRecentSearch,
-                        onClearHistory = {
-                            viewModel.onEvent(SearchEvent.ClearRecentSearches)
-                        },
-                        onSectionFocusChanged = { focused -> isRecentSearchSectionFocused = focused },
-                        clearHistoryFocusRequester = recentClearHistoryFocusRequester,
-                        modifier = Modifier.padding(horizontal = 52.dp)
-                    )
+                    item(key = "recent_searches") {
+                        RecentSearchesSection(
+                            recentSearches = uiState.recentSearches,
+                            onSearchSelected = submitRecentSearch,
+                            onClearHistory = {
+                                viewModel.onEvent(SearchEvent.ClearRecentSearches)
+                            },
+                            onSectionFocusChanged = { focused -> isRecentSearchSectionFocused = focused },
+                            clearHistoryFocusRequester = recentClearHistoryFocusRequester,
+                            modifier = Modifier.padding(horizontal = 52.dp)
+                        )
+                    }
                 } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    item(key = "search_start") {
                         EmptyScreenState(
                             title = stringResource(R.string.search_start_title),
                             subtitle = stringResource(R.string.search_start_subtitle),
@@ -530,58 +565,13 @@ fun SearchScreen(
                         )
                     }
                 }
-            }
-        } else {
-            val listState = rememberLazyListState()
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .recompositionHighlighter()
-                    .dpadRepeatThrottle(),
-                state = listState,
-                contentPadding = PaddingValues(vertical = NuvioTheme.spacing.lg),
-                verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.lg)
-            ) {
-                item {
-                    SearchInputField(
-                        query = uiState.query,
-                        canMoveToResults = canMoveToResults,
-                        voiceFocusRequester = if (isVoiceSearchAvailable) voiceFocusRequester else null,
-                        searchFocusRequester = searchFocusRequester,
-                        onSearchFieldFocusChanged = { focused -> isSearchFieldFocused = focused },
-                        onQueryChanged = handleQueryChanged,
-                        onSubmit = {
-                            submitCurrentQuery(uiState.query.trim())
-                        },
-                        showVoiceSearch = isVoiceSearchAvailable,
-                        isVoiceListening = isVoiceListening,
-                        voiceRmsLevel = voiceRmsLevel,
-                        onVoiceSearch = launchVoiceSearch,
-                        onMoveToResults = {
-                            focusResults = true
-                        },
-                        onOpenDiscover = onOpenDiscover,
-                        showDiscoverButton = uiState.discoverLocation == DiscoverLocation.IN_SEARCH,
-                        keyboardController = keyboardController,
-                        clearHistoryFocusRequester = if (showRecentSearches) recentClearHistoryFocusRequester else null
-                    )
-                }
-
-                if ((trimmedSubmittedQuery.length < 2 || hasPendingUnsubmittedQuery) && !showRecentSearches) {
-                    item {
-                        Text(
-                            text = stringResource(R.string.search_keyboard_hint),
-                            style = androidx.tv.material3.MaterialTheme.typography.bodySmall,
-                            color = NuvioTheme.colors.TextSecondary,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 52.dp)
-                        )
-                    }
-                }
+            } else {
+                // The "press Done to search" hint is gone: search now runs as you type, so the
+                // instruction is wrong, and it was re-appearing on every keystroke. Neither the
+                // mobile nor the desktop client shows an equivalent message.
 
                 when {
-                    trimmedSubmittedQuery.length < 2 && !hasPendingUnsubmittedQuery -> {
+                    trimmedSubmittedQuery.length < MIN_SEARCH_QUERY_LENGTH && !hasPendingUnsubmittedQuery -> {
                         item {
                             if (showRecentSearches) {
                                 RecentSearchesSection(
@@ -610,19 +600,46 @@ fun SearchScreen(
                         }
                     }
 
-                    uiState.isSearching && uiState.catalogRows.isEmpty() -> {
-                        // Placeholder shimmer rows are emitted by the ViewModel,
-                        // so this branch only fires if search targets haven't
-                        // been resolved yet (very brief).
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 80.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                LoadingIndicator()
+                    // Nothing to show yet, either still waiting on the debounce or on the first
+                    // responses. Mobile renders skeleton rows for both, so this does too. Unlike
+                    // mobile it only applies with an empty screen: mobile swaps results out for
+                    // skeletons on every keystroke, which on a remote reads as flicker because each
+                    // letter outlasts the debounce, so existing results are kept instead.
+                    (hasPendingUnsubmittedQuery || uiState.isSearching) && visibleCatalogRows.isEmpty() -> {
+                        items(SEARCH_SKELETON_ROW_COUNT, key = { "search_skeleton_$it" }) { index ->
+                            val skeletonRow = remember(index) {
+                                com.nuvio.tv.domain.model.CatalogRow(
+                                    addonId = "__skeleton",
+                                    addonName = "",
+                                    addonBaseUrl = "",
+                                    catalogId = "skeleton_$index",
+                                    catalogName = "",
+                                    type = com.nuvio.tv.domain.model.ContentType.MOVIE,
+                                    items = (0 until 8).map { i ->
+                                        com.nuvio.tv.domain.model.MetaPreview(
+                                            id = "__placeholder_skeleton_${index}_$i",
+                                            type = com.nuvio.tv.domain.model.ContentType.MOVIE,
+                                            name = " ",
+                                            poster = com.nuvio.tv.domain.model.PLACEHOLDER_IMAGE_URL,
+                                            posterShape = com.nuvio.tv.domain.model.PosterShape.POSTER,
+                                            background = null,
+                                            logo = null,
+                                            description = null,
+                                            releaseInfo = " ",
+                                            imdbRating = null,
+                                            genres = emptyList()
+                                        )
+                                    },
+                                    isLoading = true
+                                )
                             }
+                            CatalogRowSection(
+                                catalogRow = skeletonRow,
+                                onItemClick = { _, _, _ -> },
+                                posterCardStyle = posterCardStyle,
+                                showAddonName = uiState.catalogAddonNameEnabled,
+                                modifier = Modifier.padding(bottom = 24.dp)
+                            )
                         }
                     }
 
@@ -635,7 +652,7 @@ fun SearchScreen(
                         }
                     }
 
-                    !uiState.isSearching && (visibleCatalogRows.isEmpty()) -> {
+                    !uiState.isSearching && !hasPendingUnsubmittedQuery && visibleCatalogRows.isEmpty() -> {
                         item {
                             EmptyScreenState(
                                 title = stringResource(R.string.search_no_results_title),
@@ -648,12 +665,12 @@ fun SearchScreen(
                     else -> {
                         itemsIndexed(
                             items = visibleCatalogRows,
-                            key = { _, item ->
-                                "${item.addonId}_${item.apiType}_${item.catalogId}"
+                            key = { index, item ->
+                                "${item.stableKey()}_$index"
                             },
                             contentType = { _, _ -> "catalog_row" }
                         ) { index, catalogRow ->
-                            val catalogKey = "${catalogRow.addonId}_${catalogRow.apiType}_${catalogRow.catalogId}"
+                            val catalogKey = catalogRow.stableKey()
                             val isPlaceholder = catalogRow.isLoading &&
                                 catalogRow.items.firstOrNull()?.id?.startsWith("__placeholder_") == true
                             val hasEnoughForSeeAll = !isPlaceholder && catalogRow.items.size >= 15
@@ -670,6 +687,7 @@ fun SearchScreen(
 
                             CatalogRowSection(
                                 catalogRow = catalogRow,
+                                posterCardStyle = posterCardStyle,
                                 showSeeAll = hasEnoughForSeeAll,
                                 showPosterLabels = uiState.posterLabelsEnabled,
                                 showAddonName = uiState.catalogAddonNameEnabled,
@@ -706,6 +724,10 @@ fun SearchScreen(
                                     // pending auto-focus so it doesn't steal focus later.
                                     pendingFocusMoveToResultsQuery = null
                                     searchRowFocusedItemIndex[catalogKey] = itemIndex
+                                    // Prefetch meta for the focused item to warm cache for detail screen.
+                                    catalogRow.items.getOrNull(itemIndex)?.let { item ->
+                                        viewModel.prefetchMetaOnFocus(item.id, item.rawType)
+                                    }
                                     lastFocusedRowKey = catalogKey
                                 },
                                 onItemClick = { id, type, addonBaseUrl ->
@@ -718,7 +740,9 @@ fun SearchScreen(
                                     }
                                     viewModel.hasSavedSearchFocus = true
                                     val clickedItem = catalogRow.items.firstOrNull { it.id == id }
-                                    HeroBackdropState.update(clickedItem?.backdropUrl)
+                                    val backdrop = viewModel.getCachedBackdrop(id, type)
+                                        ?: clickedItem?.backdropUrl
+                                    HeroBackdropState.update(backdrop)
                                     onNavigateToDetail(id, type, addonBaseUrl)
                                 },
                                 onItemLongPress = { item, addonBaseUrl ->
@@ -732,6 +756,45 @@ fun SearchScreen(
                                     )
                                 }
                             )
+                        }
+
+                        // Results are up but more catalogs are still answering, as on mobile.
+                        if (uiState.isSearching || hasPendingUnsubmittedQuery) {
+                            item(key = "search_loading_more") {
+                                val skeletonRow = remember {
+                                    com.nuvio.tv.domain.model.CatalogRow(
+                                        addonId = "__skeleton",
+                                        addonName = "",
+                                        addonBaseUrl = "",
+                                        catalogId = "skeleton_more",
+                                        catalogName = "",
+                                        type = com.nuvio.tv.domain.model.ContentType.MOVIE,
+                                        items = (0 until 8).map { i ->
+                                            com.nuvio.tv.domain.model.MetaPreview(
+                                                id = "__placeholder_skeleton_more_$i",
+                                                type = com.nuvio.tv.domain.model.ContentType.MOVIE,
+                                                name = " ",
+                                                poster = com.nuvio.tv.domain.model.PLACEHOLDER_IMAGE_URL,
+                                                posterShape = com.nuvio.tv.domain.model.PosterShape.POSTER,
+                                                background = null,
+                                                logo = null,
+                                                description = null,
+                                                releaseInfo = " ",
+                                                imdbRating = null,
+                                                genres = emptyList()
+                                            )
+                                        },
+                                        isLoading = true
+                                    )
+                                }
+                                CatalogRowSection(
+                                    catalogRow = skeletonRow,
+                                    onItemClick = { _, _, _ -> },
+                                    posterCardStyle = posterCardStyle,
+                                    showAddonName = uiState.catalogAddonNameEnabled,
+                                    modifier = Modifier.padding(bottom = 24.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -764,6 +827,7 @@ private fun RecentSearchesSection(
     clearHistoryFocusRequester: FocusRequester,
     modifier: Modifier = Modifier
 ) {
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -804,7 +868,8 @@ private fun RecentSearchesSection(
                 modifier = Modifier
                     .fillMaxWidth()
                     .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                        val clearHistoryKey = RtlKeyUtils.getClearHistoryDpadKey(isRtl)
+                        if (keyEvent.nativeKeyEvent.keyCode == clearHistoryKey) {
                             if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                                 runCatching { clearHistoryFocusRequester.requestFocus() }
                             }
@@ -848,15 +913,18 @@ private fun SearchInputField(
     onOpenDiscover: () -> Unit,
     showDiscoverButton: Boolean,
     keyboardController: androidx.compose.ui.platform.SoftwareKeyboardController?,
-    clearHistoryFocusRequester: FocusRequester?
+    clearHistoryFocusRequester: FocusRequester?,
+    isScreenActive: Boolean = true
 ) {
     var isDiscoverButtonFocused by remember { mutableStateOf(false) }
     var isVoiceButtonFocused by remember { mutableStateOf(false) }
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = NuvioTheme.spacing.xxxl),
+            .padding(horizontal = NuvioTheme.spacing.xxxl)
+            .focusGroup(),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (showDiscoverButton) {
@@ -985,6 +1053,9 @@ private fun SearchInputField(
             modifier = Modifier
                 .weight(1f)
                 .focusRequester(searchFocusRequester)
+                .focusProperties {
+                    canFocus = isScreenActive
+                }
                 .onFocusChanged { focusState ->
                     onSearchFieldFocusChanged(focusState.isFocused)
                 }
@@ -1001,19 +1072,23 @@ private fun SearchInputField(
                         KeyEvent.KEYCODE_DPAD_DOWN -> {
                             if (canMoveToResults) {
                                 if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                                    keyboardController?.hide()
                                     onMoveToResults()
                                 }
                                 return@onPreviewKeyEvent true
                             }
                         }
 
-                        KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                            if (clearHistoryFocusRequester != null) {
-                                if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                                    keyboardController?.hide()
-                                    runCatching { clearHistoryFocusRequester.requestFocus() }
+                        else -> {
+                            val clearHistoryKey = RtlKeyUtils.getClearHistoryDpadKey(isRtl)
+                            if (keyEvent.nativeKeyEvent.keyCode == clearHistoryKey) {
+                                if (clearHistoryFocusRequester != null) {
+                                    if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                                        keyboardController?.hide()
+                                        runCatching { clearHistoryFocusRequester.requestFocus() }
+                                    }
+                                    return@onPreviewKeyEvent true
                                 }
-                                return@onPreviewKeyEvent true
                             }
                         }
                     }
@@ -1047,5 +1122,33 @@ private fun SearchInputField(
                 cursorColor = NuvioTheme.colors.FocusRing
             )
         )
+
+        // Clear button, requested in review. Placed beside the field rather than as a trailing
+        // icon so it is reachable with the D-pad, matching the voice button's treatment.
+        if (query.isNotEmpty()) {
+            var isClearButtonFocused by remember { mutableStateOf(false) }
+            Spacer(modifier = Modifier.width(NuvioTheme.spacing.md))
+            IconButton(
+                onClick = { onQueryChanged("") },
+                modifier = Modifier
+                    .onFocusChanged { isClearButtonFocused = it.isFocused }
+                    .size(NuvioTheme.spacing.huge)
+                    .border(
+                        width = if (isClearButtonFocused) NuvioTheme.spacing.xxs else NuvioTheme.spacing.hairline,
+                        color = if (isClearButtonFocused) NuvioTheme.colors.FocusRing else NuvioTheme.colors.Border,
+                        shape = RoundedCornerShape(NuvioTheme.radii.md)
+                    )
+                    .background(
+                        color = NuvioTheme.colors.BackgroundCard,
+                        shape = RoundedCornerShape(NuvioTheme.radii.md)
+                    )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = stringResource(R.string.cd_clear_search),
+                    tint = NuvioTheme.colors.TextPrimary
+                )
+            }
+        }
     }
 }

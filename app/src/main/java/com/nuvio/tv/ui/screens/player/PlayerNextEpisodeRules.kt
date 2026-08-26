@@ -2,20 +2,28 @@ package com.nuvio.tv.ui.screens.player
 
 import com.nuvio.tv.data.local.NextEpisodeThresholdMode
 import com.nuvio.tv.data.repository.SkipInterval
+import com.nuvio.tv.core.util.isEpisodeReleaseAired
+import com.nuvio.tv.core.util.parseEpisodeReleaseLocalDate
 import com.nuvio.tv.domain.model.Video
 import java.time.Clock
-import java.time.Instant
 import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.OffsetDateTime
-import java.time.ZoneId
 
 object PlayerNextEpisodeRules {
     fun resolveNextEpisode(
         videos: List<Video>,
-        currentSeason: Int,
+        currentSeason: Int?,
         currentEpisode: Int
     ): Video? {
+        // Absolute-numbered content (e.g. some anime via Kitsu) carries no season; order by episode
+        // number alone and advance to the next one.
+        if (currentSeason == null) {
+            val sorted = videos
+                .filter { it.episode != null }
+                .sortedWith(compareBy<Video>({ it.season ?: 0 }, { it.episode ?: 0 }))
+            val index = sorted.indexOfFirst { it.episode == currentEpisode }
+            return if (index < 0) null else sorted.getOrNull(index + 1)
+        }
+
         val sortedEpisodes = videos
             .filter { it.season != null && it.episode != null }
             .sortedWith(compareBy<Video> { it.season ?: Int.MAX_VALUE }.thenBy { it.episode ?: Int.MAX_VALUE })
@@ -89,17 +97,11 @@ object PlayerNextEpisodeRules {
     }
 
     fun parseEpisodeReleaseDate(raw: String?): LocalDate? {
-        val value = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-
-        return runCatching { LocalDate.parse(value) }.getOrNull()
-            ?: runCatching { Instant.parse(value).atZone(ZoneId.systemDefault()).toLocalDate() }.getOrNull()
-            ?: runCatching { OffsetDateTime.parse(value).toLocalDate() }.getOrNull()
-            ?: runCatching { LocalDateTime.parse(value).toLocalDate() }.getOrNull()
+        return parseEpisodeReleaseLocalDate(raw)
     }
 
     fun hasEpisodeAired(raw: String?, clock: Clock = Clock.systemDefaultZone()): Boolean {
-        val releasedDate = parseEpisodeReleaseDate(raw) ?: return true
-        return !releasedDate.isAfter(LocalDate.now(clock))
+        return isEpisodeReleaseAired(raw, clock) ?: true
     }
 
     val OUTRO_SEGMENT_TYPES = setOf("outro", "ed", "mixed-ed")

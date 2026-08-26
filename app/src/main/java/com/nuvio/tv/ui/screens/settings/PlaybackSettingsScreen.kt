@@ -52,6 +52,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalContext
+import com.nuvio.tv.ui.screens.player.NuvioExoPlayerPerformanceHelper
 import com.nuvio.tv.R
 import android.view.KeyEvent
 import androidx.compose.ui.input.key.onKeyEvent
@@ -125,7 +127,6 @@ fun PlaybackSettingsContent(
     // Dialog states
     var showLanguageDialog by remember { mutableStateOf(false) }
     var showSecondaryLanguageDialog by remember { mutableStateOf(false) }
-    var showSubtitleStartupModeDialog by remember { mutableStateOf(false) }
     var showTextColorDialog by remember { mutableStateOf(false) }
     var showBackgroundColorDialog by remember { mutableStateOf(false) }
     var showOutlineColorDialog by remember { mutableStateOf(false) }
@@ -149,7 +150,6 @@ fun PlaybackSettingsContent(
     fun dismissAllDialogs() {
         showLanguageDialog = false
         showSecondaryLanguageDialog = false
-        showSubtitleStartupModeDialog = false
         showTextColorDialog = false
         showBackgroundColorDialog = false
         showOutlineColorDialog = false
@@ -209,7 +209,6 @@ fun PlaybackSettingsContent(
                 onShowMpvHardwareDecodeModeDialog = { openDialog { showMpvHardwareDecodeModeDialog = true } },
                 onShowLanguageDialog = { openDialog { showLanguageDialog = true } },
                 onShowSecondaryLanguageDialog = { openDialog { showSecondaryLanguageDialog = true } },
-                onShowSubtitleStartupModeDialog = { openDialog { showSubtitleStartupModeDialog = true } },
                 onShowTextColorDialog = { openDialog { showTextColorDialog = true } },
                 onShowBackgroundColorDialog = { openDialog { showBackgroundColorDialog = true } },
                 onShowOutlineColorDialog = { openDialog { showOutlineColorDialog = true } },
@@ -222,6 +221,9 @@ fun PlaybackSettingsContent(
                 onShowReuseLastLinkCacheDialog = { openDialog { showReuseLastLinkCacheDialog = true } },
                 onSetStreamAutoPlayNextEpisodeEnabled = { enabled ->
                     coroutineScope.launch { viewModel.setStreamAutoPlayNextEpisodeEnabled(enabled) }
+                },
+                onSetStreamAutoPlayNextEpisodeFallbackEnabled = { enabled ->
+                    coroutineScope.launch { viewModel.setStreamAutoPlayNextEpisodeFallbackEnabled(enabled) }
                 },
                 onSetStreamAutoPlayPreferBingeGroupForNextEpisode = { enabled ->
                     coroutineScope.launch {
@@ -238,6 +240,9 @@ fun PlaybackSettingsContent(
                 },
                 onSetExternalPlayerForwardSubtitles = { enabled ->
                     coroutineScope.launch { viewModel.setExternalPlayerForwardSubtitles(enabled) }
+                },
+                onSetExternalPlayerSendSkipSegments = { enabled ->
+                    coroutineScope.launch { viewModel.setExternalPlayerSendSkipSegments(enabled) }
                 },
                 onSetNextEpisodeThresholdPercent = { percent ->
                     coroutineScope.launch { viewModel.setNextEpisodeThresholdPercent(percent) }
@@ -288,6 +293,7 @@ fun PlaybackSettingsContent(
                     coroutineScope.launch { viewModel.setRememberAudioDelayPerDevice(enabled) }
                 },
                 onSetTunnelingEnabled = { enabled -> coroutineScope.launch { viewModel.setTunnelingEnabled(enabled) } },
+                onSetForceOpticalPassthrough = { enabled -> coroutineScope.launch { viewModel.setForceOpticalPassthrough(enabled) } },
                 onShowDv7HandlingModeDialog = { openDialog { showDv7HandlingModeDialog = true } },
                 onSetDv5ToDv81Enabled = { enabled ->
                     coroutineScope.launch { viewModel.setDv5ToDv81Enabled(enabled) }
@@ -296,6 +302,13 @@ fun PlaybackSettingsContent(
                     coroutineScope.launch {
                         viewModel.setDv7ToDv81PreserveMappingEnabled(enabled)
                     }
+                },
+                onSetNuvioPerformanceModeEnabled = { enabled ->
+                    coroutineScope.launch { viewModel.setNuvioPerformanceModeEnabled(enabled) }
+                    memoryUsageTrigger++
+                },
+                onSetStripHdr10PlusSei = { enabled ->
+                    coroutineScope.launch { viewModel.setStripHdr10PlusSei(enabled) }
                 },
                 onSetBufferEngineEnabled = { enabled ->
                     coroutineScope.launch { viewModel.setBufferEngineEnabled(enabled) }
@@ -310,6 +323,9 @@ fun PlaybackSettingsContent(
                 onSetUseForcedSubtitles = { enabled -> coroutineScope.launch { viewModel.setUseForcedSubtitles(enabled) } },
                 onSetSubtitleShowOnlyPreferredLanguages = { enabled ->
                     coroutineScope.launch { viewModel.setSubtitleShowOnlyPreferredLanguages(enabled) }
+                },
+                onSetSubtitleStripSdh = { enabled ->
+                    coroutineScope.launch { viewModel.setSubtitleStripSdh(enabled) }
                 },
                 onSetSubtitleOutlineEnabled = { enabled -> coroutineScope.launch { viewModel.setSubtitleOutlineEnabled(enabled) } },
                 onSetUseLibass = { enabled -> coroutineScope.launch { viewModel.setUseLibass(enabled) } },
@@ -332,8 +348,8 @@ fun PlaybackSettingsContent(
                     coroutineScope.launch { viewModel.setParallelConnectionCount(count) }
                     memoryUsageTrigger++
                 },
-                onSetParallelChunkSizeMb = { mb ->
-                    coroutineScope.launch { viewModel.setParallelChunkSizeMb(mb) }
+                onSetParallelChunkSizeKb = { kb ->
+                    coroutineScope.launch { viewModel.setParallelChunkSizeKb(kb) }
                     memoryUsageTrigger++
                 },
                 onSetBufferMinBufferMs = { ms ->
@@ -379,34 +395,63 @@ fun PlaybackSettingsContent(
                 onResetNetworkSettingsToDefaults = {
                     coroutineScope.launch { viewModel.resetNetworkSettingsToDefaults() }
                     memoryUsageTrigger++
+                },
+                onSetEnableHttp2 = { enabled ->
+                    coroutineScope.launch { viewModel.setEnableHttp2(enabled) }
+                    memoryUsageTrigger++
                 }
             )
         }
 
         AnimatedVisibility(
             visible = showMemoryUsage &&
-                    (playerSettings.bufferEngineEnabled || playerSettings.parallelNetworkEnabled),
+                    (playerSettings.bufferEngineEnabled || playerSettings.parallelNetworkEnabled || playerSettings.nuvioPerformanceModeEnabled),
             enter = fadeIn(),
             exit = fadeOut()
         ) {
+            val context = LocalContext.current
+            val isNativeAutoMode = playerSettings.nuvioPerformanceModeEnabled && !playerSettings.bufferEngineEnabled
+            
             // Buffer engine off: only parallel overhead counts. On: managed uses the device cap,
             // otherwise the user's target size.
             val effectiveBufferMb = when {
-                !playerSettings.bufferEngineEnabled -> 0
-                playerSettings.bufferBudgetManaged -> MemoryBudget.budgetMb
-                else -> MemoryBudget.effectiveBufferMb(playerSettings.bufferSettings.targetBufferSizeMb)
+                playerSettings.nuvioPerformanceModeEnabled -> {
+                    if (playerSettings.bufferEngineEnabled && !playerSettings.bufferBudgetManaged) {
+                        MemoryBudget.effectiveBufferMb(playerSettings.bufferSettings.targetBufferSizeMb)
+                    } else {
+                        NuvioExoPlayerPerformanceHelper.getSafeNativeMemoryLimitMb(context)
+                    }
+                }
+                playerSettings.bufferEngineEnabled -> {
+                    if (playerSettings.bufferBudgetManaged) MemoryBudget.budgetMb
+                    else MemoryBudget.effectiveBufferMb(playerSettings.bufferSettings.targetBufferSizeMb)
+                }
+                else -> MemoryBudget.defaultBufferSizeMb
             }
             val totalUsageMb = MemoryBudget.totalUsageMb(
                 effectiveBufferMb,
                 playerSettings.parallelConnectionCount,
-                playerSettings.parallelChunkSizeMb,
-                playerSettings.useParallelConnections
+                Math.ceil(playerSettings.parallelChunkSizeKb / 1024.0).toInt(),
+                playerSettings.useParallelConnections && playerSettings.parallelNetworkEnabled
             )
-            val usageRatio = totalUsageMb.toFloat() / MemoryBudget.budgetMb.coerceAtLeast(1)
-            val usageColor = when {
-                usageRatio > 0.9f -> Color(0xFFF44336)
-                usageRatio > 0.7f -> Color(0xFFFF9800)
-                else -> Color(0xFF4CAF50)
+
+            val safeLimitMb = if (playerSettings.nuvioPerformanceModeEnabled) {
+                NuvioExoPlayerPerformanceHelper.getSafeNativeMemoryLimitMb(context)
+            } else {
+                MemoryBudget.budgetMb
+            }
+
+            val warningLimitMb = if (playerSettings.nuvioPerformanceModeEnabled) {
+                NuvioExoPlayerPerformanceHelper.getWarningNativeMemoryLimitMb(context)
+            } else {
+                (MemoryBudget.budgetMb * 1.25f).toInt()
+            }
+
+            val usageStatus = MemoryBudget.getUsageStatus(totalUsageMb, safeLimitMb, warningLimitMb)
+            val usageColor = when (usageStatus) {
+                MemoryUsageStatus.DANGER -> Color(0xFFF44336)
+                MemoryUsageStatus.WARNING -> Color(0xFFFF9800)
+                MemoryUsageStatus.SAFE -> Color(0xFF4CAF50)
             }
             Box(
                 modifier = Modifier
@@ -419,7 +464,7 @@ fun PlaybackSettingsContent(
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
                 Text(
-                    text = stringResource(R.string.playback_estimated_memory_usage, totalUsageMb, MemoryBudget.budgetMb),
+                    text = stringResource(R.string.playback_estimated_memory_usage, totalUsageMb, warningLimitMb),
                     style = MaterialTheme.typography.bodySmall,
                     color = usageColor
                 )
@@ -435,7 +480,6 @@ fun PlaybackSettingsContent(
         showInternalPlayerEngineDialog = showInternalPlayerEngineDialog,
         showLanguageDialog = showLanguageDialog,
         showSecondaryLanguageDialog = showSecondaryLanguageDialog,
-        showSubtitleStartupModeDialog = showSubtitleStartupModeDialog,
         showTextColorDialog = showTextColorDialog,
         showBackgroundColorDialog = showBackgroundColorDialog,
         showOutlineColorDialog = showOutlineColorDialog,
@@ -465,9 +509,6 @@ fun PlaybackSettingsContent(
         },
         onSetSubtitleSecondaryLanguage = { language ->
             coroutineScope.launch { viewModel.setSubtitleSecondaryLanguage(language) }
-        },
-        onSetAddonSubtitleStartupMode = { mode ->
-            coroutineScope.launch { viewModel.setAddonSubtitleStartupMode(mode) }
         },
         onSetSubtitleTextColor = { color ->
             coroutineScope.launch { viewModel.setSubtitleTextColor(color.toArgb()) }
@@ -519,7 +560,6 @@ fun PlaybackSettingsContent(
         },
         onDismissLanguageDialog = ::dismissAllDialogs,
         onDismissSecondaryLanguageDialog = ::dismissAllDialogs,
-        onDismissSubtitleStartupModeDialog = ::dismissAllDialogs,
         onDismissTextColorDialog = ::dismissAllDialogs,
         onDismissBackgroundColorDialog = ::dismissAllDialogs,
         onDismissOutlineColorDialog = ::dismissAllDialogs,
@@ -581,7 +621,7 @@ internal fun ToggleSettingsItem(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, if (enabled) NuvioTheme.colors.FocusRing else NuvioTheme.colors.FocusRing.copy(alpha = 0.3f)),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = if (enabled) 1f else 0.3f),
                 shape = RoundedCornerShape(SettingsPillRadius)
             )
         ),
@@ -686,7 +726,7 @@ internal fun RenderTypeSettingsItem(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing.copy(alpha = contentAlpha)),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = contentAlpha),
                 shape = RoundedCornerShape(SettingsSecondaryCardRadius)
             ),
             border = if (isSelected) Border(
@@ -761,7 +801,7 @@ internal fun NavigationSettingsItem(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, if (enabled) NuvioTheme.colors.FocusRing else NuvioTheme.colors.FocusRing.copy(alpha = 0.3f)),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = if (enabled) 1f else 0.3f),
                 shape = RoundedCornerShape(SettingsPillRadius)
             )
         ),
@@ -813,7 +853,7 @@ internal fun NavigationSettingsItem(
 
 @Composable
 internal fun SliderSettingsItem(
-    icon: ImageVector,
+    icon: ImageVector?,
     title: String,
     value: Int,
     valueText: String,
@@ -823,7 +863,8 @@ internal fun SliderSettingsItem(
     onValueChange: (Int) -> Unit,
     subtitle: String? = null,
     onFocused: () -> Unit = {},
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier
 ) {
     val span = (maxValue - minValue).toFloat()
     val progress = if (span > 0f) (value - minValue).toFloat() / span else 0f
@@ -844,12 +885,13 @@ internal fun SliderSettingsItem(
             if (newValue != value) onValueChange(newValue)
         },
         onFocused = onFocused,
+        modifier = modifier,
     )
 }
 
 @Composable
 internal fun SliderSettingsItem(
-    icon: ImageVector,
+    icon: ImageVector?,
     title: String,
     values: List<Int>,
     selected: Int,
@@ -858,6 +900,7 @@ internal fun SliderSettingsItem(
     subtitle: String? = null,
     onFocused: () -> Unit = {},
     enabled: Boolean = true,
+    modifier: Modifier = Modifier,
 ) {
     require(values.isNotEmpty()) { "SliderSettingsItem.values must not be empty" }
 
@@ -883,12 +926,13 @@ internal fun SliderSettingsItem(
             if (newValue != selected) onValueChange(newValue)
         },
         onFocused = onFocused,
+        modifier = modifier,
     )
 }
 
 @Composable
 private fun SliderSettingsItemLayout(
-    icon: ImageVector,
+    icon: ImageVector?,
     title: String,
     valueText: String,
     subtitle: String?,
@@ -897,13 +941,15 @@ private fun SliderSettingsItemLayout(
     onDecrease: () -> Unit,
     onIncrease: () -> Unit,
     onFocused: () -> Unit,
+    modifier: Modifier,
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val contentAlpha = if (enabled) 1f else 0.4f
+    val isRtl = androidx.compose.ui.platform.LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl   // ✅ ADD it here instead
 
     Card(
         onClick = { },
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .onFocusChanged { state ->
                 val nowFocused = state.isFocused
@@ -917,11 +963,11 @@ private fun SliderSettingsItemLayout(
                 if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) return@onKeyEvent false
                 when (event.nativeKeyEvent.keyCode) {
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
-                        onDecrease()
+                        if (isRtl) onIncrease() else onDecrease()
                         true
                     }
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                        onIncrease()
+                        if (isRtl) onDecrease() else onIncrease()
                         true
                     }
                     else -> false
@@ -933,7 +979,7 @@ private fun SliderSettingsItemLayout(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, if (enabled) NuvioTheme.colors.FocusRing else NuvioTheme.colors.FocusRing.copy(alpha = 0.3f)),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = if (enabled) 1f else 0.3f),
                 shape = RoundedCornerShape(SettingsSecondaryCardRadius)
             )
         ),
@@ -949,14 +995,16 @@ private fun SliderSettingsItemLayout(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = (if (isFocused && enabled) NuvioTheme.colors.Primary else NuvioTheme.colors.TextSecondary).copy(alpha = contentAlpha),
-                    modifier = Modifier.size(22.dp)
-                )
+                if (icon != null) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = (if (isFocused && enabled) NuvioTheme.colors.Primary else NuvioTheme.colors.TextSecondary).copy(alpha = contentAlpha),
+                        modifier = Modifier.size(22.dp)
+                    )
 
-                Spacer(modifier = Modifier.width(NuvioTheme.spacing.lg))
+                    Spacer(modifier = Modifier.width(NuvioTheme.spacing.lg))
+                }
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -1011,7 +1059,7 @@ private fun SliderSettingsItemLayout(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = CircleShape
                         )
                     ),
@@ -1064,7 +1112,7 @@ private fun SliderSettingsItemLayout(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = CircleShape
                         )
                     ),
@@ -1118,7 +1166,7 @@ internal fun ColorSettingsItem(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, if (enabled) NuvioTheme.colors.FocusRing else NuvioTheme.colors.FocusRing.copy(alpha = 0.3f)),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = if (enabled) 1f else 0.3f),
                 shape = RoundedCornerShape(SettingsPillRadius)
             )
         ),
@@ -1304,7 +1352,7 @@ internal fun ColorSelectionDialog(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = RoundedCornerShape(NuvioTheme.radii.sm)
                         )
                     ),
@@ -1346,7 +1394,7 @@ internal fun ColorSelectionDialog(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = RoundedCornerShape(NuvioTheme.radii.sm)
                         )
                     ),
@@ -1376,7 +1424,7 @@ internal fun ColorSelectionDialog(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = RoundedCornerShape(NuvioTheme.radii.sm)
                         )
                     ),
@@ -1401,7 +1449,7 @@ internal fun ColorSelectionDialog(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = RoundedCornerShape(NuvioTheme.radii.sm)
                         )
                     ),
@@ -1448,7 +1496,7 @@ private fun ColorOption(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(3.dp, NuvioTheme.colors.FocusRing),
+                border = NuvioTheme.focusRing.border(3.dp),
                 shape = CircleShape
             ),
             border = if (isSelected) Border(

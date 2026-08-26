@@ -8,15 +8,17 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -61,8 +63,11 @@ import androidx.tv.material3.Text
 import com.nuvio.tv.LocaleCache
 import com.nuvio.tv.R
 import com.nuvio.tv.domain.model.AppTheme
+import com.nuvio.tv.domain.model.SettingsUiStyle
 import com.nuvio.tv.ui.components.NuvioDialog
+import com.nuvio.tv.ui.screens.detail.requestFocusAfterFrames
 import com.nuvio.tv.ui.theme.ThemeColors
+import com.nuvio.tv.ui.theme.accentBrush
 import com.nuvio.tv.ui.theme.getFontFamily
 import kotlinx.coroutines.delay
 import java.util.Locale
@@ -97,7 +102,7 @@ fun ThemeSettingsContent(
     val supportedLocales = remember(strLanguageSystem) {
         val tags = listOf(
             "en", "ru", "ar", "bg", "bs", "da", "de", "el", "es", "es-419", "hu", "fr", "in", "it",
-            "no", "pl", "pt-PT", "pt-BR", "tr", "uk", "cs", "sk", "sl", "sv", "ta", "ro", "ja",
+            "no", "pl", "pt-PT", "pt-BR", "tr", "uk", "cs", "sk", "sl", "sq", "sv", "ta", "ro", "ja",
             "nl", "vi", "hi", "lt", "he", "zh-CN", "zh-TW"
         )
         listOf(null to strLanguageSystem) + tags.map { tag ->
@@ -124,8 +129,25 @@ fun ThemeSettingsContent(
         }
     }
 
+    val styleFocusRequesters = remember { SettingsUiStyle.entries.associateWith { FocusRequester() } }
+    val appliedSettingsUiStyle = NuvioTheme.settingsUiStyle
+    LaunchedEffect(Unit) {
+        if (viewModel.consumeStyleFocusRestore()) {
+            styleFocusRequesters[appliedSettingsUiStyle]?.requestFocusAfterFrames()
+        }
+    }
+
     val themeScrollState = rememberScrollState()
     val themeRowState = rememberLazyListState()
+    var initialTheme by remember { mutableStateOf<AppTheme?>(null) }
+    LaunchedEffect(uiState.themesLoaded) {
+        if (!uiState.themesLoaded || initialTheme != null) return@LaunchedEffect
+        initialTheme = uiState.selectedTheme
+        val selectedIndex = uiState.availableThemes.indexOf(initialTheme)
+        if (selectedIndex < 0) return@LaunchedEffect
+        themeRowState.scrollToItem(selectedIndex)
+        initialFocusRequester?.requestFocusAfterFrames()
+    }
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -153,12 +175,16 @@ fun ThemeSettingsContent(
                         itemsIndexed(
                             items = uiState.availableThemes,
                             key = { _, theme -> theme.name }
-                        ) { index, theme ->
+                        ) { _, theme ->
                             ThemeSwatchChip(
                                 theme = theme,
                                 isSelected = theme == uiState.selectedTheme,
                                 onClick = { viewModel.onEvent(ThemeSettingsEvent.SelectTheme(theme)) },
-                                modifier = if (index == 0 && initialFocusRequester != null) {
+                                modifier = if (
+                                    uiState.themesLoaded &&
+                                    theme == initialTheme &&
+                                    initialFocusRequester != null
+                                ) {
                                     Modifier.focusRequester(initialFocusRequester)
                                 } else {
                                     Modifier
@@ -187,6 +213,32 @@ fun ThemeSettingsContent(
                             )
                         }
                     )
+                }
+            }
+
+            SettingsGroupCard(
+                modifier = Modifier.fillMaxWidth(),
+                title = stringResource(R.string.appearance_settings_style),
+                subtitle = stringResource(R.string.appearance_settings_style_subtitle)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min)
+                        .padding(horizontal = NuvioTheme.spacing.xs, vertical = NuvioTheme.spacing.xs),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    uiState.availableSettingsUiStyles.forEach { style ->
+                        SettingsStyleOptionCard(
+                            style = style,
+                            isSelected = style == uiState.settingsUiStyle,
+                            onClick = { viewModel.onEvent(ThemeSettingsEvent.SelectSettingsUiStyle(style)) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .focusRequester(styleFocusRequesters.getValue(style))
+                        )
+                    }
                 }
             }
 
@@ -289,7 +341,7 @@ private fun ThemeSwatchChip(
         border = CardDefaults.border(
             border = Border.None,
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                 shape = chipShape
             )
         ),
@@ -306,7 +358,7 @@ private fun ThemeSwatchChip(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(palette.secondary),
+                    .background(palette.accentBrush()),
                 contentAlignment = Alignment.Center
             ) {
                 if (isSelected) {
@@ -332,7 +384,99 @@ private fun ThemeSwatchChip(
 }
 
 @Composable
+private fun SettingsStyleOptionCard(
+    style: SettingsUiStyle,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val cardShape = RoundedCornerShape(18.dp)
+
+    Card(
+        onClick = onClick,
+        modifier = modifier
+            .onFocusChanged { state ->
+                val nowFocused = state.isFocused
+                if (isFocused != nowFocused) {
+                    isFocused = nowFocused
+                }
+            },
+        colors = CardDefaults.colors(
+            containerColor = NuvioTheme.colors.Background,
+            focusedContainerColor = NuvioTheme.colors.Background
+        ),
+        border = CardDefaults.border(
+            border = if (isSelected) Border(
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.hairline),
+                shape = cardShape
+            ) else Border.None,
+            focusedBorder = Border(
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
+                shape = cardShape
+            )
+        ),
+        shape = CardDefaults.shape(cardShape),
+        scale = CardDefaults.scale(focusedScale = 1f, pressedScale = 1f)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(NuvioTheme.spacing.md)
+        ) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = style.localizedName(),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (isFocused || isSelected) NuvioTheme.colors.TextPrimary else NuvioTheme.colors.TextSecondary,
+                    maxLines = 1,
+                    modifier = Modifier.align(Alignment.CenterStart)
+                )
+                if (isSelected) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = stringResource(R.string.cd_selected),
+                        tint = NuvioTheme.colors.Secondary,
+                        modifier = Modifier
+                            .size(16.dp)
+                            .align(Alignment.CenterEnd)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(NuvioTheme.spacing.xxs))
+
+            Text(
+                text = style.localizedDescription(),
+                style = MaterialTheme.typography.bodySmall,
+                color = NuvioTheme.colors.TextTertiary,
+                maxLines = 2
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsUiStyle.localizedName(): String = when (this) {
+    SettingsUiStyle.CLASSIC -> stringResource(R.string.settings_style_classic)
+    SettingsUiStyle.ZEN -> stringResource(R.string.settings_style_zen)
+    SettingsUiStyle.HORIZON -> stringResource(R.string.settings_style_horizon)
+}
+
+@Composable
+private fun SettingsUiStyle.localizedDescription(): String = when (this) {
+    SettingsUiStyle.CLASSIC -> stringResource(R.string.settings_style_classic_desc)
+    SettingsUiStyle.ZEN -> stringResource(R.string.settings_style_zen_desc)
+    SettingsUiStyle.HORIZON -> stringResource(R.string.settings_style_horizon_desc)
+}
+
+@Composable
 private fun AppTheme.localizedName(): String = when (this) {
+    AppTheme.GOLD -> stringResource(R.string.theme_color_gold)
+    AppTheme.JADE -> stringResource(R.string.theme_color_jade)
+    AppTheme.ROSE_GOLD -> stringResource(R.string.theme_color_rose_gold)
+    AppTheme.ARCTIC_BLUE -> stringResource(R.string.theme_color_arctic_blue)
+    AppTheme.GRAPHITE -> stringResource(R.string.theme_color_graphite)
     AppTheme.CRIMSON -> stringResource(R.string.theme_color_crimson)
     AppTheme.OCEAN -> stringResource(R.string.theme_color_ocean)
     AppTheme.VIOLET -> stringResource(R.string.theme_color_violet)
