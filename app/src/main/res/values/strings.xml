@@ -3112,4 +3112,11 @@
     <string name="stream_test_video_bitrate">Average Video Bitrate: %1$s</string>
     <string name="stream_test_error_connection">Connection failed. The last played stream link may have expired or is unreachable. Please play the video again and retry.</string>
 
+    <string name="account_signin_credentials_subtitle">Open the sign-in screen and enter your credentials</string>
+    <string name="auth_signin_panel_subtitle">Sign in with your credentials. Nuvio will verify your access across every available gateway automatically.</string>
+    <string name="auth_signin_loading_services">Checking available gateways…</string>
+    <string name="auth_signin_username_placeholder">Username</string>
+    <string name="auth_signin_password_placeholder">Password</string>
+    <string name="auth_signin_panel_btn">Sign-in</string>
+    <string name="auth_signin_signing_in">Verifying access</string>
 </resources>

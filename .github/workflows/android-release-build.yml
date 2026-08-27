@@ -1,0 +1,138 @@
+name: Android Release Build
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    tags:
+      - 'v*'
+      - '*-beta*'
+      - '*-rc*'
+  pull_request:
+    paths:
+      - app/**
+      - scripts/release_beta.py
+      - gradle/**
+      - build.gradle.kts
+      - settings.gradle.kts
+      - .github/workflows/android-release-build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  assemble-full-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prepare local properties
+        env:
+          LOCAL_PROPERTIES_BASE64: ${{ secrets.LOCAL_PROPERTIES_BASE64 }}
+          LOCAL_DEV_PROPERTIES_BASE64: ${{ secrets.LOCAL_DEV_PROPERTIES_BASE64 }}
+        run: |
+          if [ -n "$LOCAL_PROPERTIES_BASE64" ]; then
+            printf '%s' "$LOCAL_PROPERTIES_BASE64" | base64 --decode > local.properties
+          fi
+          if [ -n "$LOCAL_DEV_PROPERTIES_BASE64" ]; then
+            printf '%s' "$LOCAL_DEV_PROPERTIES_BASE64" | base64 --decode > local.dev.properties
+          fi
+
+      - name: Prepare signing config
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.NUVIO_RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_KEY_ALIAS: ${{ secrets.NUVIO_RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.NUVIO_RELEASE_KEY_PASSWORD }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.NUVIO_RELEASE_STORE_PASSWORD }}
+        run: |
+          if [ -n "$RELEASE_KEYSTORE_BASE64" ]; then
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/nuviotv.jks"
+            {
+              echo "NUVIO_RELEASE_STORE_FILE=$RUNNER_TEMP/nuviotv.jks"
+              echo "NUVIO_RELEASE_KEY_ALIAS=$RELEASE_KEY_ALIAS"
+              echo "NUVIO_RELEASE_KEY_PASSWORD=$RELEASE_KEY_PASSWORD"
+              echo "NUVIO_RELEASE_STORE_PASSWORD=$RELEASE_STORE_PASSWORD"
+            } >> "$GITHUB_ENV"
+          else
+            echo "CI_USE_DEBUG_SIGNING=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build full release APKs
+        run: ./gradlew :app:assembleFullRelease
+
+      - name: Prepare release APK
+        shell: bash
+        run: |
+          version_name="$(grep -m1 'versionName = ' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')"
+          release_apk="app/build/outputs/apk/full/release/Nuvio_${version_name}.apk"
+          build_tools_dir="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          zipalign_bin="$build_tools_dir/zipalign"
+          apksigner_bin="$build_tools_dir/apksigner"
+
+          cp app/build/outputs/apk/full/release/app-full-universal-release.apk "$release_apk"
+          echo "RELEASE_APK=$release_apk" >> "$GITHUB_ENV"
+
+          "$zipalign_bin" -c -v 4 "$release_apk"
+          "$apksigner_bin" verify --verbose "$release_apk"
+
+      - name: Upload release APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-release-apks
+          path: |
+            ${{ env.RELEASE_APK }}
+            app/build/outputs/apk/full/release/*.apk
+            app/build/outputs/apk/full/release/output-metadata.json
+            app/build/outputs/mapping/fullRelease/mapping.txt
+
+      - name: Publish GitHub release
+        if: ${{ github.event_name == 'push' && (github.ref_type == 'tag' || github.ref == 'refs/heads/dev') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version_name="$(grep -m1 'versionName = ' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')"
+          prerelease_args=()
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            release_tag="$GITHUB_REF_NAME"
+            case "$release_tag" in
+              *-beta*|*-rc*) prerelease_args+=(--prerelease) ;;
+            esac
+          else
+            release_tag="cockpit-${version_name}.${GITHUB_RUN_NUMBER}"
+            prerelease_args+=(--prerelease)
+          fi
+
+          release_assets=(
+            "$RELEASE_APK"
+            app/build/outputs/apk/full/release/app-full-arm64-v8a-release.apk
+            app/build/outputs/apk/full/release/app-full-armeabi-v7a-release.apk
+            app/build/outputs/apk/full/release/app-full-x86_64-release.apk
+            app/build/outputs/apk/full/release/app-full-x86-release.apk
+          )
+
+          if gh release view "$release_tag" >/dev/null 2>&1; then
+            gh release edit "$release_tag" --title "$release_tag" "${prerelease_args[@]}"
+            gh release upload "$release_tag" "${release_assets[@]}" --clobber
+          else
+            gh release create "$release_tag" \
+              "${release_assets[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "$release_tag" \
+              --generate-notes \
+              "${prerelease_args[@]}"
+          fi

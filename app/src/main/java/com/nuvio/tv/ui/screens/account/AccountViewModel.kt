@@ -94,7 +94,7 @@ class AccountViewModel @Inject constructor(
     private var qrLoginExchangeInFlight: Boolean = false
 
     val usesEmailPasswordLogin: Boolean
-        get() = serverConfiguration.isCustom && serverConfiguration.capabilities.emailPasswordAuth
+        get() = authManager.isPanelCloudConfigured() || (serverConfiguration.isCustom && serverConfiguration.capabilities.emailPasswordAuth)
 
     init {
         observeAuthState()
@@ -154,6 +154,10 @@ class AccountViewModel @Inject constructor(
     }
 
     fun signIn(email: String, password: String) {
+        if (authManager.isPanelCloudConfigured()) {
+            signInToPanel(email, password)
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             authManager.signInWithEmail(email, password).fold(
@@ -166,6 +170,30 @@ class AccountViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     _uiState.update { it.copy(isLoading = false, error = userFriendlyError(e)) }
+                }
+            )
+        }
+    }
+
+    fun signInToPanel(username: String, password: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, isPortalLoading = true, error = null) }
+            authManager.getPanelPortals().fold(
+                onSuccess = { portals ->
+                    _uiState.update { it.copy(availablePortals = portals, isPortalLoading = false) }
+                    var failure: Throwable? = null
+                    for (portal in portals.ifEmpty { listOf(com.nuvio.tv.data.remote.panel.PanelPortalDto(0, "Default", "")) }) {
+                        val result = authManager.signInWithPanel(portal.url, username, password, Build.MODEL)
+                        if (result.isSuccess) {
+                            _uiState.update { it.copy(isLoading = false, error = null) }
+                            return@launch
+                        }
+                        failure = result.exceptionOrNull()
+                    }
+                    _uiState.update { it.copy(isLoading = false, error = userFriendlyError(failure ?: Exception("Panel login failed"))) }
+                },
+                onFailure = { error ->
+                    _uiState.update { it.copy(isLoading = false, isPortalLoading = false, error = userFriendlyError(error)) }
                 }
             )
         }

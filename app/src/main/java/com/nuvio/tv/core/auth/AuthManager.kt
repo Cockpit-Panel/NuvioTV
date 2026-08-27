@@ -11,6 +11,11 @@ import com.nuvio.tv.core.logging.diagnosticSummary
 import com.nuvio.tv.core.logging.rawForLog
 import com.nuvio.tv.core.logging.urlForLog
 import com.nuvio.tv.data.local.AuthSessionNoticeDataStore
+import com.nuvio.tv.data.local.PanelSession
+import com.nuvio.tv.data.local.PanelSessionDataStore
+import com.nuvio.tv.data.remote.api.PanelCloudApi
+import com.nuvio.tv.data.remote.panel.PanelLoginRequest
+import com.nuvio.tv.data.remote.panel.PanelPortalDto
 import com.nuvio.tv.data.remote.supabase.TvLoginExchangeResult
 import com.nuvio.tv.data.remote.supabase.TvLoginPollResult
 import com.nuvio.tv.data.remote.supabase.TvLoginStartResult
@@ -83,7 +88,9 @@ class AuthManager @Inject constructor(
     private val authSessionNoticeDataStore: AuthSessionNoticeDataStore,
     private val accountLocalDataResetService: AccountLocalDataResetService,
     private val authDiagnosticReportRepository: AuthDiagnosticReportRepository,
-    private val serverConfiguration: ServerConfiguration
+    private val serverConfiguration: ServerConfiguration,
+    private val panelCloudApi: PanelCloudApi,
+    private val panelSessionDataStore: PanelSessionDataStore
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true }
@@ -99,9 +106,20 @@ class AuthManager @Inject constructor(
     private var cachedEffectiveUserSourceUserId: String? = null
     private var startupAuthDiagnostics: AuthDiagnosticsSession? = null
     private var startupAuthCompleted = false
+    @Volatile private var currentPanelSession: PanelSession? = null
+
+    val supportsFullCloudSync: Boolean get() = currentPanelSession == null
 
     init {
         observeSessionStatus()
+        scope.launch {
+            panelSessionDataStore.session.collect { session ->
+                currentPanelSession = session
+                if (session != null) {
+                    _authState.value = AuthState.FullAccount(session.userId, session.email)
+                }
+            }
+        }
     }
 
     private fun observeSessionStatus() {
@@ -143,6 +161,7 @@ class AuthManager @Inject constructor(
                         }
                     }
                     is SessionStatus.NotAuthenticated -> {
+                        if (currentPanelSession != null) return@collect
                         val diagnostics = getStartupAuthDiagnostics()
                         val session = auth.currentSessionOrNull()
                         val refreshToken = session?.refreshToken?.takeIf { it.isNotBlank() }
@@ -372,6 +391,40 @@ class AuthManager @Inject constructor(
         }
     }
 
+    fun isPanelCloudConfigured(): Boolean = BuildConfig.PANEL_CLOUD_API_URL.isNotBlank()
+
+    suspend fun getPanelPortals(): Result<List<PanelPortalDto>> = runCatching {
+        check(isPanelCloudConfigured()) { "Panel cloud API URL is not configured" }
+        val response = panelCloudApi.getPortals()
+        check(response.isSuccessful) { response.errorBody()?.string().orEmpty().ifBlank { "Failed to load service list" } }
+        response.body()?.portals ?: error("Empty portals response")
+    }
+
+    suspend fun signInWithPanel(serverUrl: String, username: String, password: String, deviceName: String? = null): Result<Unit> = runCatching {
+        check(isPanelCloudConfigured()) { "Panel cloud API URL is not configured" }
+        val normalizedUsername = username.trim()
+        val attempts = listOf(
+            PanelLoginRequest(username = normalizedUsername, password = password),
+            PanelLoginRequest(serverUrl = serverUrl.trim().ifBlank { null }, username = normalizedUsername, password = password, deviceName = deviceName)
+        ).distinct()
+        var lastError = "Panel login failed"
+        var body: com.nuvio.tv.data.remote.panel.PanelLoginResponse? = null
+        for (request in attempts) {
+            val response = panelCloudApi.login(request)
+            if (response.isSuccessful) { body = response.body(); break }
+            lastError = response.errorBody()?.string().orEmpty().ifBlank { "Panel login failed (${response.code()})" }
+        }
+        val login = body ?: error(lastError)
+        val session = PanelSession(login.tokens.accessToken, login.tokens.refreshToken, login.user.id,
+            login.user.email.ifBlank { normalizedUsername }, login.user.displayName, login.user.serverUrl ?: serverUrl)
+        panelSessionDataStore.save(session)
+        currentPanelSession = session
+        _authState.value = AuthState.FullAccount(session.userId, session.email)
+        authSessionNoticeDataStore.markNuvioAuthenticated()
+    }
+
+    suspend fun getAccessToken(): String? = currentPanelSession?.accessToken ?: auth.currentAccessTokenOrNull()
+
     suspend fun signOut(explicit: Boolean = true) {
         sessionValidator.reset()
         if (explicit) {
@@ -384,6 +437,8 @@ class AuthManager @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Sign out failed", e)
         }
+        panelSessionDataStore.clear()
+        currentPanelSession = null
         cachedEffectiveUserId = null
         cachedEffectiveUserSourceUserId = null
         _authState.value = AuthState.SignedOut

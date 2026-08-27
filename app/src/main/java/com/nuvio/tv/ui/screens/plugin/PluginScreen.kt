@@ -186,10 +186,6 @@ fun PluginScreenContent(
                     )
                 }
 
-                // Manage from phone card
-                item {
-                    ManageFromPhoneCard(onClick = { viewModel.onEvent(PluginUiEvent.StartQrMode) })
-                }
             }
 
             item {
@@ -275,18 +271,6 @@ fun PluginScreenContent(
         successMessage = uiState.successMessage,
         errorMessage = uiState.errorMessage
     )
-
-    // QR Code overlay — Popup renders above the entire screen
-    if (uiState.isQrModeActive) {
-        Popup(properties = PopupProperties(focusable = true)) {
-            QrCodeOverlay(
-                qrBitmap = uiState.qrCodeBitmap,
-                serverUrl = uiState.serverUrl,
-                onClose = { viewModel.onEvent(PluginUiEvent.StopQrMode) },
-                hasPendingChange = uiState.pendingRepoChange != null
-            )
-        }
-    }
 
     // Confirmation dialog overlay
     if (uiState.pendingRepoChange != null) {

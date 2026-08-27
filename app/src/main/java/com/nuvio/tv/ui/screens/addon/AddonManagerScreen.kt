@@ -404,13 +404,6 @@ fun AddonManagerScreen(
 
             }
 
-            item {
-                ManageFromPhoneCard(
-                    subtitle = manageFromPhoneSubtitle,
-                    onClick = { viewModel.startQrMode(webConfigMode) }
-                )
-            }
-
             if (!viewModel.isReadOnly && !isEssential && hasHomeVisibleCatalogs) {
                 item {
                     CatalogOrderEntryCard(onClick = onNavigateToCatalogOrder)
@@ -493,19 +486,6 @@ fun AddonManagerScreen(
                         toggleFocusRequester = if (index == 0) firstAddonToggleFocusRequester else null
                     )
                 }
-            }
-        }
-
-        // QR Code overlay — Popup renders above the entire screen
-        if (uiState.isQrModeActive) {
-            Popup(properties = PopupProperties(focusable = true)) {
-                QrCodeOverlay(
-                    qrBitmap = uiState.qrCodeBitmap,
-                    serverUrl = uiState.serverUrl,
-                    instruction = qrInstruction,
-                    onClose = viewModel::stopQrMode,
-                    hasPendingChange = uiState.pendingChange != null
-                )
             }
         }
 
@@ -1442,13 +1422,6 @@ private fun AddonCardContent(
                 color = NuvioTheme.colors.TextSecondary
             )
         }
-
-        Spacer(modifier = Modifier.height(NuvioTheme.spacing.sm))
-        Text(
-            text = addon.baseUrl,
-            style = MaterialTheme.typography.bodySmall,
-            color = NuvioTheme.colors.TextTertiary
-        )
 
         Spacer(modifier = Modifier.height(NuvioTheme.spacing.sm))
         Text(

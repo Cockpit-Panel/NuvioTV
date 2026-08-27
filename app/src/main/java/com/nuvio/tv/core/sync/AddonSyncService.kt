@@ -4,6 +4,7 @@ import android.util.Log
 import com.nuvio.tv.core.auth.AuthManager
 import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.data.local.AddonPreferences
+import com.nuvio.tv.data.remote.api.PanelCloudApi
 import com.nuvio.tv.data.remote.supabase.SupabaseAddon
 import io.github.jan.supabase.postgrest.Postgrest
 import kotlinx.coroutines.Dispatchers
@@ -24,7 +25,8 @@ class AddonSyncService @Inject constructor(
     private val authManager: AuthManager,
     private val addonPreferences: AddonPreferences,
     private val profileManager: ProfileManager,
-    private val syncClientIdentity: SyncClientIdentity
+    private val syncClientIdentity: SyncClientIdentity,
+    private val panelCloudApi: PanelCloudApi
 ) {
     private suspend fun <T> withJwtRefreshRetry(block: suspend () -> T): T {
         return try {
@@ -41,6 +43,7 @@ class AddonSyncService @Inject constructor(
      */
     suspend fun pushToRemote(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            if (!authManager.supportsFullCloudSync) return@withContext Result.success(Unit)
             val activeProfile = profileManager.activeProfile
             val profileId = profileManager.activeProfileId.value
             Log.d(TAG, "pushToRemote: activeProfile=${activeProfile?.id} isPrimary=${activeProfile?.isPrimary} usesPrimaryAddons=${activeProfile?.usesPrimaryAddons} profileId=$profileId")
@@ -88,6 +91,16 @@ class AddonSyncService @Inject constructor(
 
     suspend fun getRemoteAddonUrls(): Result<List<String>> = withContext(Dispatchers.IO) {
         try {
+            if (!authManager.supportsFullCloudSync) {
+                val token = authManager.getAccessToken() ?: return@withContext Result.failure(IllegalStateException("Not authenticated"))
+                val activeProfile = profileManager.activeProfile
+                val profileId = if (activeProfile != null && !activeProfile.isPrimary && activeProfile.usesPrimaryAddons) 1 else profileManager.activeProfileId.value
+                val response = panelCloudApi.getAddons("Bearer $token", profileId)
+                if (!response.isSuccessful) return@withContext Result.failure(IllegalStateException("Failed to load panel addons (${response.code()})"))
+                val addons = response.body()?.addons.orEmpty().filter { it.enabled && it.profileId == profileId }.sortedBy { it.sortOrder }
+                addonPreferences.setUserSetNames(addons.mapNotNull { item -> item.name?.takeIf(String::isNotBlank)?.let { canonicalizeUrl(item.url) to it } }.toMap())
+                return@withContext Result.success(addons.map { it.url })
+            }
             val effectiveUserId = authManager.getEffectiveUserId(fallbackToOwnIdOnFailure = false)
                 ?: return@withContext Result.failure(
                     IllegalStateException("Unable to resolve sync owner for addon sync")

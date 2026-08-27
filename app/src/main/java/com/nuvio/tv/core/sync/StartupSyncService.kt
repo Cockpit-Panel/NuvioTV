@@ -453,6 +453,11 @@ class StartupSyncService @Inject constructor(
             }
 
             Log.d(TAG, "Pulling remote data for profile $profileId")
+            if (!authManager.supportsFullCloudSync) {
+                pullPanelManagedData(profileId)
+                startupSyncPreferences.markFullPull(profileId, userId, includeProfileSettings)
+                return Result.success(Unit)
+            }
             pullBroadRemoteData(profileId, includeProfileSettings)
 
             val shouldUseSupabaseWatchProgressSync = watchProgressSyncService.shouldUseSupabaseWatchProgressSync()
@@ -498,6 +503,11 @@ class StartupSyncService @Inject constructor(
     ): Result<Unit> {
         try {
             Log.d(TAG, "Running warm remote sync for profile $profileId")
+            if (!authManager.supportsFullCloudSync) {
+                pullPanelManagedData(profileId)
+                startupSyncPreferences.markFullPull(profileId, userId, includeProfileSettings)
+                return Result.success(Unit)
+            }
             pullBroadRemoteData(profileId, includeProfileSettings)
             val shouldUseSupabaseWatchProgressSync = watchProgressSyncService.shouldUseSupabaseWatchProgressSync()
             watchProgressSyncService.restoreLastPushTimestamp(profileId)
@@ -536,6 +546,10 @@ class StartupSyncService @Inject constructor(
         profileId: Int,
         includeProfileSettings: Boolean
     ) {
+        if (!authManager.supportsFullCloudSync) {
+            pullPanelManagedData(profileId)
+            return
+        }
         profileSyncService.pullFromRemote().getOrElse { throw it }
         Log.d(TAG, "Pulled profiles from remote")
 
@@ -692,6 +706,13 @@ class StartupSyncService @Inject constructor(
             pluginManager.isSyncingFromRemote = false
             pluginManager.flushPendingSync()
         }
+    }
+
+    private suspend fun pullPanelManagedData(profileId: Int) = coroutineScope {
+        val plugins = async { pullRealtimePlugins(profileId) }
+        val addons = async { pullRealtimeAddons(profileId) }
+        plugins.await()
+        addons.await()
     }
 
     private suspend fun pullRealtimeAddons(profileId: Int) {
