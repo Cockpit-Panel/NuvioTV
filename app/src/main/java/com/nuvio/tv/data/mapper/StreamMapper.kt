@@ -10,10 +10,13 @@ import com.nuvio.tv.data.remote.dto.StreamDto
 import com.nuvio.tv.domain.model.ProxyHeaders
 import com.nuvio.tv.domain.model.Stream
 import com.nuvio.tv.domain.model.StreamBehaviorHints
+import com.nuvio.tv.domain.model.Subtitle
 import com.nuvio.tv.domain.model.StreamClientResolve
 import com.nuvio.tv.domain.model.StreamClientResolveParsed
 import com.nuvio.tv.domain.model.StreamClientResolveRaw
 import com.nuvio.tv.domain.model.StreamClientResolveStream
+import com.nuvio.tv.domain.model.toStreamAudioDelayLanguage
+import com.nuvio.tv.domain.model.toStreamAudioDelayMs
 
 fun StreamDto.toDomain(addonName: String, addonLogo: String?): Stream = Stream(
     name = name,
@@ -28,7 +31,20 @@ fun StreamDto.toDomain(addonName: String, addonLogo: String?): Stream = Stream(
     addonName = addonName,
     addonLogo = addonLogo,
     sources = sources,
-    clientResolve = clientResolve?.toDomain()
+    clientResolve = clientResolve?.toDomain(),
+    subtitles = subtitles.orEmpty().mapNotNull { dto ->
+        val url = dto.url.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        Subtitle(
+            id = dto.id?.takeIf { it.isNotBlank() } ?: url,
+            url = url,
+            lang = dto.lang.ifBlank { "Unknown" },
+            addonName = addonName,
+            addonLogo = addonLogo,
+            isStreamProvided = true,
+            headers = dto.headers,
+            label = dto.label?.trim()?.takeIf { it.isNotBlank() }
+        )
+    }
 )
 
 fun StreamClientResolveDto.toDomain(): StreamClientResolve = StreamClientResolve(
@@ -98,7 +114,9 @@ fun BehaviorHintsDto.toDomain(): StreamBehaviorHints = StreamBehaviorHints(
     proxyHeaders = proxyHeaders?.toDomain(),
     videoHash = videoHash,
     videoSize = videoSize,
-    filename = filename
+    filename = filename,
+    audioDelayMs = audioDelayMs.toStreamAudioDelayMs(),
+    audioDelayLanguage = audioDelayLanguage.toStreamAudioDelayLanguage()
 )
 
 fun ProxyHeadersDto.toDomain(): ProxyHeaders = ProxyHeaders(

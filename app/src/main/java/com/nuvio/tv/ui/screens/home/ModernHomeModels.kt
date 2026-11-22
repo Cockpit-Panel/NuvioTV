@@ -5,6 +5,8 @@ import androidx.compose.runtime.Stable
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import coil3.memory.MemoryCache
+import com.nuvio.tv.core.image.CustomPosterFallbackInterceptor
 import com.nuvio.tv.domain.model.CatalogRow
 import com.nuvio.tv.domain.model.Collection
 import com.nuvio.tv.domain.model.CollectionFolder
@@ -58,6 +60,8 @@ data class HeroPreview(
     val poster: String?,
     val backdrop: String?,
     val imageUrl: String?,
+    val mdbListRatings: com.nuvio.tv.domain.model.MDBListRatings? = null,
+    val mdbListRatingOrder: List<String> = com.nuvio.tv.domain.model.MDBListSettings.DEFAULT_RATING_ORDER,
     /** Snapshot of the backdrop URL captured before TMDB enrichment.
      *  Survives cache rebuilds so landscape cards keep their original art
      *  even after navigation away and back. */
@@ -134,6 +138,7 @@ data class CarouselRowLookups(
     val fallbackBackdropByRow: StableMap<String, String>,
     val activeRowKeys: StableSet<String>,
     val activeItemKeysByRow: StableMap<String, Set<String>>,
+    val itemIdentitiesByRow: StableMap<String, StableList<String>>,
     val activeCatalogItemIds: StableSet<String>
 )
 
@@ -148,6 +153,7 @@ data class ModernHomePresentationState(
         fallbackBackdropByRow = StableMap(),
         activeRowKeys = StableSet(),
         activeItemKeysByRow = StableMap(),
+        itemIdentitiesByRow = StableMap(),
         activeCatalogItemIds = StableSet()
     )
 )
@@ -278,11 +284,35 @@ internal fun ModernCarouselItem.catalogCardRequestMetrics(
     return base.copy(width = maxOf(base.width, expandedWidth))
 }
 
+internal fun ModernCarouselItem.cardImageFallbackUrl(landscapeCustomPoster: Boolean): String? =
+    if (landscapeCustomPoster) {
+        metaPreview?.background ?: heroPreview.backdrop ?: metaPreview?.rawPosterUrl
+    } else {
+        metaPreview?.rawPosterUrl
+    }
+
+internal fun cardImageMemoryCacheKey(
+    url: String,
+    widthPx: Int,
+    heightPx: Int,
+    fallbackUrl: String?,
+    revalidationKey: Int = 0
+): MemoryCache.Key {
+    val key = "${url}_${widthPx}x${heightPx}_v$revalidationKey"
+    return if (!fallbackUrl.isNullOrBlank() && fallbackUrl != url) {
+        MemoryCache.Key(key, mapOf(CustomPosterFallbackInterceptor.FALLBACK_URL_KEY to fallbackUrl))
+    } else {
+        MemoryCache.Key(key)
+    }
+}
+
 
 internal fun buildContinueWatchingItem(
     item: ContinueWatchingItem,
     useLandscapePosters: Boolean,
     showImdbRatings: Boolean,
+    detailImdbRatingsVisibility: com.nuvio.tv.domain.model.DetailImdbRatingsVisibility =
+        com.nuvio.tv.domain.model.DetailImdbRatingsVisibility.SHOW_ALL,
     airsDateTemplate: String,
     upcomingLabel: String,
     context: android.content.Context
@@ -340,15 +370,17 @@ internal fun buildContinueWatchingItem(
                 yearText = extractYearOrRange(item.releaseInfo),
                 secondaryHighlightText = secondaryHighlightText,
                 imdbText = item.episodeImdbRating
+                    ?.takeIf { !isSeries || detailImdbRatingsVisibility.showEpisodeRating(isWatched = item.progress.isCompleted()) }
                     ?.let { String.format("%.1f", it) },
                 genres = item.genres.asStable(),
                 poster = item.progress.poster,
                 backdrop = item.progress.backdrop,
                 imageUrl = if (useLandscapePosters) {
-                    item.progress.backdrop ?: item.progress.poster
+                    item.customLandscapePoster ?: item.progress.backdrop ?: item.progress.poster
                 } else {
                     item.progress.poster ?: item.progress.backdrop
-                }
+                },
+                mdbListRatings = item.mdbListRatings
             )
         }
         is ContinueWatchingItem.NextUp -> {
@@ -370,22 +402,24 @@ internal fun buildContinueWatchingItem(
                 yearText = extractYearOrRange(item.info.releaseInfo),
                 secondaryHighlightText = secondaryHighlightText,
                 imdbText = item.info.imdbRating
+                    ?.takeIf { detailImdbRatingsVisibility.showEpisodeRating(isWatched = false) }
                     ?.let { String.format("%.1f", it) },
                 genres = item.info.genres.asStable(),
                 poster = item.info.poster,
                 backdrop = item.info.backdrop,
                 imageUrl = if (useLandscapePosters) {
-                    firstNonBlank(item.info.backdrop, item.info.poster, item.info.thumbnail)
+                    item.customLandscapePoster ?: firstNonBlank(item.info.backdrop, item.info.poster, item.info.thumbnail)
                 } else {
                     firstNonBlank(item.info.poster, item.info.backdrop, item.info.thumbnail)
-                }
+                },
+                mdbListRatings = item.info.mdbListRatings
             )
         }
     }
 
     val imageUrl = when (item) {
         is ContinueWatchingItem.InProgress -> if (useLandscapePosters) {
-            if (isSeriesType(item.progress.contentType)) {
+            item.customLandscapePoster ?: if (isSeriesType(item.progress.contentType)) {
                 firstNonBlank(item.episodeThumbnail, item.progress.poster, item.progress.backdrop)
             } else {
                 firstNonBlank(item.progress.backdrop, item.progress.poster)
@@ -398,7 +432,7 @@ internal fun buildContinueWatchingItem(
             }
         }
         is ContinueWatchingItem.NextUp -> if (useLandscapePosters) {
-            if (item.info.hasAired) {
+            item.customLandscapePoster ?: if (item.info.hasAired) {
                 firstNonBlank(item.info.thumbnail, item.info.poster, item.info.backdrop)
             } else {
                 firstNonBlank(item.info.backdrop, item.info.poster, item.info.thumbnail)
@@ -491,10 +525,12 @@ internal fun buildCatalogItem(
         poster = item.poster,
         backdrop = item.backdropUrl,
         imageUrl = if (useLandscapePosters) {
-            item.backdropUrl ?: item.poster
+            item.landscapePoster ?: item.backdropUrl ?: item.poster
         } else {
             item.poster ?: item.backdropUrl
         },
+        mdbListRatings = item.mdbListRatings,
+        mdbListRatingOrder = item.mdbListRatingOrder,
         frozenBackdropUrl = frozenBackdrop,
         frozenLogoUrl = frozenLogo
     )
@@ -504,7 +540,7 @@ internal fun buildCatalogItem(
         title = item.name,
         subtitle = item.releaseInfo,
         imageUrl = if (useLandscapePosters) {
-            item.backdropUrl ?: item.poster
+            item.landscapePoster ?: item.backdropUrl ?: item.poster
         } else {
             item.poster ?: item.backdropUrl
         },
@@ -573,13 +609,10 @@ internal fun buildCollectionFolderItem(
     )
 }
 
+// One key per show, like the shuffle key: when its card moves to another episode it stays the
+// same row item, so focus stays on it instead of passing to the next card.
 internal fun continueWatchingItemKey(item: ContinueWatchingItem): String {
-    return when (item) {
-        is ContinueWatchingItem.InProgress ->
-            "cw_inprogress_${item.progress.contentId}_${item.progress.season ?: -1}_${item.progress.episode ?: -1}"
-        is ContinueWatchingItem.NextUp ->
-            "cw_nextup_${item.info.contentId}_${item.info.season}_${item.info.episode}"
-    }
+    return item.shuffleFocusKey ?: "cw_${item.contentId()}"
 }
 
 internal fun catalogRowKey(row: CatalogRow): String {

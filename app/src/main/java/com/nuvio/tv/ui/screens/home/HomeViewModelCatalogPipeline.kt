@@ -17,6 +17,7 @@ import com.nuvio.tv.domain.model.nextCatalogSkip
 import com.nuvio.tv.domain.model.skipStep
 import com.nuvio.tv.domain.model.stableKey
 import com.nuvio.tv.domain.model.WatchedItem
+import com.nuvio.tv.domain.model.isSeriesLikeType
 import com.nuvio.tv.domain.model.supportsExtra
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -108,18 +109,18 @@ internal fun HomeViewModel.observeTmdbSettingsPipeline() {
         tmdbSettingsDataStore.settings
             .collectLatest { settings ->
                 val languageChanged = currentTmdbSettings.language != settings.language
-                val releaseDatesChanged = currentTmdbSettings.useReleaseDates != settings.useReleaseDates
                 currentTmdbSettings = settings
                 val tmdbEnabledForLayout = settings.enabled &&
                     (_uiState.value.homeLayout != HomeLayout.MODERN || settings.modernHomeEnabled)
                 val enrichEnabled = tmdbEnabledForLayout || externalMetaPrefetchEnabled
                 _uiState.update { it.copy(heroEnrichmentEnabled = enrichEnabled) }
-                if (languageChanged || releaseDatesChanged) {
+                if (languageChanged) {
                     // Allow re-enrichment with the updated TMDB metadata selection on next focus.
                     prefetchedTmdbIds.clear()
                     prefetchedExternalMetaIds.clear()
                     _enrichedPreviews.value = emptyMap()
                     _lastEnrichedPreview.value = null
+                    clearEnrichmentFailures()
                 }
                 scheduleUpdateCatalogRows()
             }
@@ -129,10 +130,11 @@ internal fun HomeViewModel.observeTmdbSettingsPipeline() {
 @OptIn(FlowPreview::class)
 internal fun HomeViewModel.observeInstalledAddonsPipeline() {
     viewModelScope.launch {
-        addonRepository.getInstalledAddons()
+        combine(addonRepository.getInstalledAddons(), serverCatalog.addons) { installed, servers ->
+            installed.enabledAddons() + servers
+        }
             .distinctUntilChanged()
-            .collectLatest { installedAddons ->
-                val addons = installedAddons.enabledAddons()
+            .collectLatest { addons ->
                 addonsCache = addons
                 loadAllCatalogsPipeline(addons)
             }
@@ -151,6 +153,12 @@ internal suspend fun HomeViewModel.loadAllCatalogsPipeline(
     ) {
         return
     }
+
+    // The layout preference flow is debounced, so on a cold start the saved hero
+    // sources are still unknown when the first catalogs publish, and the hero
+    // falls back to whichever catalog answered first. Read them before loading
+    // so the hero only ever renders its own sources.
+    currentHeroCatalogKeys = layoutPreferenceDataStore.heroCatalogSelections.first()
 
     activeCatalogLoadSignature = signature
     catalogsLoadInProgress = true
@@ -180,6 +188,7 @@ internal suspend fun HomeViewModel.loadAllCatalogsPipeline(
     trailerPreviewNegativeCache.clear()
     trailerPreviewUrlsState.clear()
     trailerPreviewAudioUrlsState.clear()
+    trailerPreviewYoutubeKeys.clear()
     activeTrailerPreviewItemId = null
     trailerPreviewRequestVersion = 0L
     prefetchedExternalMetaIds.clear()
@@ -189,6 +198,7 @@ internal suspend fun HomeViewModel.loadAllCatalogsPipeline(
     prefetchedTmdbIds.clear()
     tmdbEnrichFocusJob?.cancel()
     pendingTmdbEnrichItemId = null
+    clearEnrichmentFailures()
     lastHeroEnrichmentSignature = null
     lastHeroEnrichedItems = emptyList()
     heroItemOrder = emptyList()
@@ -196,7 +206,7 @@ internal suspend fun HomeViewModel.loadAllCatalogsPipeline(
     try {
         if (addons.isEmpty()) {
             catalogsLoadInProgress = false
-            _uiState.update { it.copy(isLoading = false, error = appContext.getString(R.string.home_error_no_addons)) }
+            _uiState.update { it.copy(isLoading = false, error = appContext.getString(R.string.home_empty_no_sources_title)) }
             return
         }
 
@@ -409,7 +419,8 @@ internal fun HomeViewModel.loadCatalogPipeline(
     generation: Long,
     /** True only for the ON_RESUME refresh, where a row already on screen must be merged into. */
     isRefresh: Boolean = false,
-    requestedByUser: Boolean = false
+    requestedByUser: Boolean = false,
+    forceReplace: Boolean = false
 ) {
     val loadJob = viewModelScope.launch {
         var hasCountedCompletion = false
@@ -440,9 +451,11 @@ internal fun HomeViewModel.loadCatalogPipeline(
                             type = catalog.apiType,
                             catalogId = catalog.id
                         )
-                        if (!isRefresh || !mergeRefreshedCatalogRow(key, result.data, requestedByUser)) {
+                        if (!isRefresh || !mergeRefreshedCatalogRow(key, result.data, requestedByUser, forceReplace)) {
                             replaceCatalogRow(key, result.data)
                         }
+                        // Trigger MDBList batch for newly loaded catalog data.
+                        onCatalogRowItemsChanged(key)
                         // Remove placeholder descriptor now that real data is available
                         synchronized(catalogStateLock) {
                             placeholderDescriptors.removeAll { it.catalogKey == key }
@@ -552,6 +565,7 @@ internal fun HomeViewModel.loadMoreCatalogItemsPipeline(catalogId: String, addon
                     }
                     _loadingCatalogs.update { it - key }
                     scheduleUpdateCatalogRows()
+                    onCatalogRowItemsChanged(key)
                 }
                 is NetworkResult.Error -> {
                     updateCatalogRow(key) { it.copy(isLoading = false) }
@@ -667,6 +681,7 @@ internal suspend fun HomeViewModel.updateCatalogRowsPipeline() {
         val computedHeroItems = when {
             heroItemsFromSelectedCatalogs.isNotEmpty() -> heroItemsFromSelectedCatalogs
             fallbackHeroItemsFromSelectedCatalogs.isNotEmpty() -> fallbackHeroItemsFromSelectedCatalogs
+            selectedHeroCatalogSet.isNotEmpty() -> emptyList()
             fallbackHeroItemsWithArtwork.isNotEmpty() -> fallbackHeroItemsWithArtwork
             else -> emptyList()
         }
@@ -887,7 +902,7 @@ internal suspend fun HomeViewModel.updateCatalogRowsPipeline() {
     val tmdbEnabledForCurrentLayout = tmdbSettings.enabled &&
         (currentLayout != HomeLayout.MODERN || tmdbSettings.modernHomeEnabled)
     val shouldUseEnrichedHeroItems = tmdbEnabledForCurrentLayout &&
-        (tmdbSettings.useArtwork || tmdbSettings.useBasicInfo || tmdbSettings.useDetails || tmdbSettings.useReleaseDates)
+        (tmdbSettings.useArtwork || tmdbSettings.useBasicInfo || tmdbSettings.useDetails)
 
     if (shouldUseEnrichedHeroItems && baseHeroItems.isNotEmpty()) {
         heroEnrichmentJob?.cancel()
@@ -948,10 +963,11 @@ internal fun HomeViewModel.schedulePosterStatusReconcilePipeline(rows: List<Cata
 }
 
 internal fun HomeViewModel.reconcilePosterStatusObserversPipeline(rows: List<CatalogRow>) {
+    // Movies and every other one-video type (an add-on's "youtube", say) are watched as a whole.
     val allMovieItemsByKey = linkedMapOf<String, String>()
     rows.asSequence()
         .flatMap { row -> row.items.asSequence() }
-        .filter { it.apiType.equals("movie", ignoreCase = true) }
+        .filterNot { isSeriesLikeType(it.apiType) }
         .forEach { item ->
             val key = homeItemStatusKey(item.id, item.apiType)
             if (key !in allMovieItemsByKey) {
@@ -1110,13 +1126,15 @@ internal fun HomeViewModel.mergeRefreshedCatalogRow(
     fresh: CatalogRow,
     /** True when the user asked for the refresh, in which case seeing the change wins over
      *  keeping their place in the row they happen to be on. */
-    requestedByUser: Boolean = false
+    requestedByUser: Boolean = false,
+    /** True when poster URLs may have changed (e.g. custom poster pattern update).
+     *  Forces a full row replacement even if IDs haven't changed. */
+    forceReplace: Boolean = false
 ): Boolean {
     val current = readCatalogRow(key) ?: return false
     if (current.items.isEmpty()) return false
-    // An addon answering 200 with no items (rate limit, partial outage) must not wipe a row the
-    // user can see; keep what is on screen and try again on the next pass.
     if (fresh.items.isEmpty()) return true
+    if (forceReplace) return false
 
     val identity = { item: com.nuvio.tv.domain.model.MetaPreview -> item.apiType + ":" + item.id }
     val currentIds = current.items.map(identity)
@@ -1137,9 +1155,10 @@ internal fun HomeViewModel.mergeRefreshedCatalogRow(
     val rowHasFocus = focusedRowKey != null && focusedRowKey == fresh.stableKey()
 
     if (isPrepend) {
-        // Nothing is removed, so the focused card only shifts along. That holds in the modern
-        // layout, which keeps the whole row; the others cut it at a fixed length, where the
-        // focused card can be pushed past the cut.
+        // Nothing is removed and every card already on screen keeps its key, so the focused card
+        // only shifts along and its node is reused. That holds in the modern layout, which keeps
+        // the whole row; the others cut it at a fixed length, where the focused card can be
+        // pushed past the cut and no key brings back a card that has left the list.
         if (!requestedByUser && rowHasFocus && _uiState.value.homeLayout != HomeLayout.MODERN) {
             return true
         }
@@ -1153,6 +1172,7 @@ internal fun HomeViewModel.mergeRefreshedCatalogRow(
             HomeViewModel.TAG,
             "Home catalog refresh: +${added.size} item(s) catalogId=${fresh.catalogId}"
         )
+        onCatalogRowItemsChanged(key)
         return true
     }
 
@@ -1162,7 +1182,7 @@ internal fun HomeViewModel.mergeRefreshedCatalogRow(
 }
 
 
-internal fun HomeViewModel.refreshVisibleCatalogsPipeline(requestedByUser: Boolean = false) {
+internal fun HomeViewModel.refreshVisibleCatalogsPipeline(requestedByUser: Boolean = false, forceReplace: Boolean = false) {
     val loadedKeys = synchronized(catalogStateLock) { catalogsMap.keys.toSet() }
     if (loadedKeys.isEmpty()) return
 
@@ -1183,6 +1203,6 @@ internal fun HomeViewModel.refreshVisibleCatalogsPipeline(requestedByUser: Boole
     val generation = catalogLoadGeneration
     pendingCatalogLoads += toRefresh.size
     toRefresh.forEach { (addon, catalog) ->
-        loadCatalogPipeline(addon, catalog, generation, isRefresh = true, requestedByUser = requestedByUser)
+        loadCatalogPipeline(addon, catalog, generation, isRefresh = true, requestedByUser = requestedByUser, forceReplace = forceReplace)
     }
 }

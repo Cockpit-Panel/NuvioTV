@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,12 +56,21 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.nuvio.tv.ui.util.LocalRecompositionHighlighterEnabled
+import com.nuvio.tv.ui.util.contentTextDirection
 import com.nuvio.tv.ui.util.recompositionHighlighter
 import coil3.request.transitionFactory
 import com.nuvio.tv.R
 import kotlinx.coroutines.delay
 import com.nuvio.tv.ui.components.ImdbRatingSourceLabel
 import com.nuvio.tv.ui.components.TrailerPlayer
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.unit.toSize
+import com.nuvio.tv.core.player.BackgroundTrailerRequest
+import com.nuvio.tv.core.player.LocalBackgroundTrailerController
+import com.nuvio.tv.ui.components.BackgroundTrailerRequestEffect
+import com.nuvio.tv.ui.components.AutoScrollingText
 import androidx.compose.ui.res.stringResource
 
 private data class ModernHeroSecondaryMeta(
@@ -90,6 +100,7 @@ internal fun ModernHeroScene(
         heroTrailerAudioUrl = { state().trailerAudioUrl },
         heroTrailerPlaybackKey = { state().trailerPlaybackKey },
         muted = { state().trailerMuted },
+        isFullScreen = isFullScreen,
         onTrailerEnded = onTrailerEnded,
         onFirstFrameRendered = onFirstFrameRendered,
         modifier = modifier,
@@ -113,6 +124,7 @@ internal fun ModernHeroMediaLayer(
     heroTrailerAudioUrl: () -> String?,
     heroTrailerPlaybackKey: () -> String?,
     muted: () -> Boolean,
+    isFullScreen: () -> Boolean,
     onTrailerEnded: () -> Unit,
     onFirstFrameRendered: () -> Unit,
     modifier: Modifier,
@@ -154,7 +166,13 @@ internal fun ModernHeroMediaLayer(
         displayedBackdrop?.let { HeroBackdropState.update(it) }
     }
 
-    Box(modifier = modifier) {
+    var heroMediaRect by remember { mutableStateOf<Rect?>(null) }
+    Box(
+        modifier = modifier.onGloballyPositioned { coordinates ->
+            val rect = Rect(coordinates.positionInWindow(), coordinates.size.toSize())
+            if (heroMediaRect != rect) heroMediaRect = rect
+        }
+    ) {
         androidx.compose.animation.Crossfade(
             targetState = imageModel,
             animationSpec = tween(durationMillis = NuvioMotion.tokens.durations.overlay),
@@ -173,7 +191,36 @@ internal fun ModernHeroMediaLayer(
                 alignment = Alignment.TopEnd
             )
         }
-        if (shouldPlay) {
+        val backgroundTrailerController = LocalBackgroundTrailerController.current
+        if (backgroundTrailerController != null) {
+            val fullScreenVal = isFullScreen()
+            val mediaRect = heroMediaRect
+            val trailerUrlVal = if (shouldPlay && (fullScreenVal || mediaRect != null)) heroTrailerUrl() else null
+            val audioUrlVal = heroTrailerAudioUrl()
+            val mutedVal = muted()
+            val latestOnTrailerEnded by rememberUpdatedState(onTrailerEnded)
+            val latestOnFirstFrameRendered by rememberUpdatedState(onFirstFrameRendered)
+            val request = remember(trailerUrlVal, audioUrlVal, mutedVal, fullScreenVal, mediaRect) {
+                trailerUrlVal?.let { url ->
+                    BackgroundTrailerRequest(
+                        videoUrl = url,
+                        audioUrl = audioUrlVal,
+                        muted = mutedVal,
+                        autoCropLetterbox = fullScreenVal,
+                        bounds = if (fullScreenVal) null else mediaRect,
+                        overscanZoom = if (fullScreenVal) 1f else MODERN_TRAILER_OVERSCAN_ZOOM,
+                        alpha = { transitionProgressState.value },
+                        onEnded = { latestOnTrailerEnded() },
+                        onFirstFrameRendered = { latestOnFirstFrameRendered() }
+                    )
+                }
+            }
+            BackgroundTrailerRequestEffect(
+                controller = backgroundTrailerController,
+                owner = HOME_HERO_TRAILER_OWNER,
+                request = request
+            )
+        } else if (shouldPlay) {
             val trailerUrlVal = heroTrailerUrl()
             val playbackKeyVal = heroTrailerPlaybackKey()
             val audioUrlVal = heroTrailerAudioUrl()
@@ -292,11 +339,21 @@ internal fun HeroTitleBlock(
     enrichmentActive: () -> Boolean = { false },
     portraitMode: Boolean,
     showImdbRatings: Boolean,
+    mdbListShowOnHero: Boolean = false,
+    mdbListRatingOrder: List<String> = com.nuvio.tv.domain.model.MDBListSettings.DEFAULT_RATING_ORDER,
     trailerPlaying: () -> Boolean = { false },
+    descriptionAutoScrollEnabled: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val currentPreview = previewProvider()
-    val isEnriching = enrichmentActive()
+    // The providers read hero state that is rewritten on every focus move, often with an equal
+    // value. Deriving the pair recomposes this block only when what it shows actually changes.
+    val latestPreviewProvider = rememberUpdatedState(previewProvider)
+    val latestEnrichmentActive = rememberUpdatedState(enrichmentActive)
+    val displayInputs by remember {
+        derivedStateOf { latestPreviewProvider.value() to latestEnrichmentActive.value() }
+    }
+    val currentPreview = displayInputs.first
+    val isEnriching = displayInputs.second
     
     var stablePreview by remember { mutableStateOf<HeroPreview?>(null) }
 
@@ -321,7 +378,10 @@ internal fun HeroTitleBlock(
             previewProvider = { displayPreview },
             portraitMode = portraitMode,
             showImdbRatings = showImdbRatings,
-            trailerPlaying = trailerPlaying
+            mdbListShowOnHero = mdbListShowOnHero,
+            mdbListRatingOrder = mdbListRatingOrder,
+            trailerPlaying = trailerPlaying,
+            descriptionAutoScrollEnabled = descriptionAutoScrollEnabled
         )
     }
 }
@@ -331,7 +391,10 @@ private fun HeroTitleContent(
     previewProvider: () -> HeroPreview?,
     portraitMode: Boolean,
     showImdbRatings: Boolean,
-    trailerPlaying: () -> Boolean = { false }
+    mdbListShowOnHero: Boolean = false,
+    mdbListRatingOrder: List<String> = com.nuvio.tv.domain.model.MDBListSettings.DEFAULT_RATING_ORDER,
+    trailerPlaying: () -> Boolean = { false },
+    descriptionAutoScrollEnabled: Boolean = false
 ) {
     val preview = previewProvider() ?: return
     val highlighterEnabled = LocalRecompositionHighlighterEnabled.current
@@ -359,7 +422,9 @@ private fun HeroTitleContent(
                 .build()
         }
     }
-    val trailerPlayingValue = trailerPlaying()
+    // Same idea as in HeroTitleBlock: only a flip of the result should recompose this content.
+    val latestTrailerPlaying = rememberUpdatedState(trailerPlaying)
+    val trailerPlayingValue by remember { derivedStateOf { latestTrailerPlaying.value() } }
     val metaAlpha by animateFloatAsState(
         targetValue = if (trailerPlayingValue) 0f else 1f,
         animationSpec = tween(durationMillis = 480),
@@ -448,9 +513,11 @@ private fun HeroTitleContent(
         val secondaryDetails = secondaryMeta.details
         val hasSecondaryBadge = ageRatingBadge != null || statusBadge != null
         val hasImdbRatingForLayout = !preview.imdbText.isNullOrBlank()
-        val reserveImdbInPrimary = !preview.isSeries && !hasSecondaryBadge && hasImdbRatingForLayout
+        val hasMdbListRatings = mdbListShowOnHero && preview.mdbListRatings != null && !preview.mdbListRatings.isEmpty()
+        // When MDBList ratings are shown, don't reserve space for standalone IMDb badge.
+        val reserveImdbInPrimary = !hasMdbListRatings && !preview.isSeries && !hasSecondaryBadge && hasImdbRatingForLayout
         val reserveImdbInPrimaryWithHighlight = reserveImdbInPrimary && secondaryHighlightText == null
-        val reserveImdbInSecondary = hasImdbRatingForLayout &&
+        val reserveImdbInSecondary = !hasMdbListRatings && hasImdbRatingForLayout &&
             (preview.isSeries || hasSecondaryBadge || secondaryHighlightText != null)
         val showImdbInPrimaryWithHighlight = showImdbRatings && reserveImdbInPrimaryWithHighlight
         val showImdbInSecondary = showImdbRatings && reserveImdbInSecondary
@@ -525,7 +592,7 @@ private fun HeroTitleContent(
                             imdbText = preview.imdbText.orEmpty(),
                             textStyle = labelMedium,
                             textColor = NuvioTheme.colors.TextSecondary,
-                            logoSize = 30.dp * metaScale,
+                            logoSize = NuvioTheme.spacing.xl * metaScale,
                             spacing = imdbMetaSpacing,
                             visible = showImdbInPrimaryWithHighlight
                         )
@@ -534,7 +601,7 @@ private fun HeroTitleContent(
             }
         }
 
-        if (secondaryHighlightText != null || ageRatingBadge != null || reserveImdbInSecondary || statusBadge != null || secondaryDetails.isNotEmpty()) {
+        if (secondaryHighlightText != null || ageRatingBadge != null || reserveImdbInSecondary || statusBadge != null || secondaryDetails.isNotEmpty() || hasMdbListRatings) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -552,10 +619,10 @@ private fun HeroTitleContent(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                if (secondaryHighlightText != null && (hasSecondaryBadge || reserveImdbInSecondary || secondaryDetails.isNotEmpty())) {
+                if (secondaryHighlightText != null && (hasSecondaryBadge || reserveImdbInSecondary || secondaryDetails.isNotEmpty() || hasMdbListRatings)) {
                     HeroMetaDivider(
                         scale = metaScale,
-                        visible = hasSecondaryBadge || showImdbInSecondary || secondaryDetails.isNotEmpty()
+                        visible = hasSecondaryBadge || showImdbInSecondary || secondaryDetails.isNotEmpty() || hasMdbListRatings
                     )
                 }
                 if (ageRatingBadge != null && statusBadge != null) {
@@ -581,10 +648,10 @@ private fun HeroTitleContent(
                         )
                     }
                 }
-                if ((ageRatingBadge != null || statusBadge != null) && (reserveImdbInSecondary || secondaryDetails.isNotEmpty())) {
+                if ((ageRatingBadge != null || statusBadge != null) && (reserveImdbInSecondary || secondaryDetails.isNotEmpty() || hasMdbListRatings)) {
                     HeroMetaDivider(
                         scale = metaScale,
-                        visible = showImdbInSecondary || secondaryDetails.isNotEmpty()
+                        visible = showImdbInSecondary || secondaryDetails.isNotEmpty() || hasMdbListRatings
                     )
                 }
                 if (reserveImdbInSecondary) {
@@ -592,7 +659,7 @@ private fun HeroTitleContent(
                         imdbText = preview.imdbText.orEmpty(),
                         textStyle = labelMedium,
                         textColor = NuvioTheme.colors.TextSecondary,
-                        logoSize = 30.dp * metaScale,
+                        logoSize = NuvioTheme.spacing.xl * metaScale,
                         spacing = imdbMetaSpacing,
                         visible = showImdbInSecondary
                     )
@@ -615,16 +682,31 @@ private fun HeroTitleContent(
                         HeroMetaDivider(metaScale)
                     }
                 }
+                // MDBList ratings inline after other secondary meta.
+                if (showImdbRatings && hasMdbListRatings) {
+                    // Divider before MDBList ratings is already handled by the
+                    // badge/IMDb/details divider logic above — only add one
+                    // when IMDb or details were the last visible element.
+                    if (showImdbInSecondary || secondaryDetails.isNotEmpty()) {
+                        HeroMetaDivider(metaScale)
+                    }
+                    com.nuvio.tv.ui.components.MDBListRatingsRow(
+                        ratings = preview.mdbListRatings!!,
+                        maxItems = 3,
+                        order = mdbListRatingOrder
+                    )
+                }
             }
         }
 
         preview.description?.takeIf { it.isNotBlank() }?.let { description ->
-            Text(
+            AutoScrollingText(
                 text = description,
-                style = scaledDescriptionStyle,
+                style = scaledDescriptionStyle.copy(textDirection = description.contentTextDirection()),
                 color = NuvioTheme.colors.TextPrimary,
                 maxLines = descriptionMaxLines,
-                overflow = TextOverflow.Ellipsis,
+                autoScrollEnabled = descriptionAutoScrollEnabled,
+                paused = trailerPlaying,
                 modifier = Modifier.graphicsLayer { alpha = metaAlpha }
             )
         }
@@ -744,3 +826,5 @@ private fun HeroMetaDivider(
             .background(NuvioTheme.colors.TextTertiary.copy(alpha = 0.78f))
     )
 }
+
+internal const val HOME_HERO_TRAILER_OWNER = "home_hero"

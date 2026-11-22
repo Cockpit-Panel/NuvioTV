@@ -39,6 +39,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -66,6 +67,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextDirection
+import com.nuvio.tv.ui.util.contentTextDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -79,6 +82,8 @@ import androidx.tv.material3.Card
 import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.Tab
+import androidx.tv.material3.TabRow
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
@@ -88,6 +93,7 @@ import com.nuvio.tv.domain.model.PersonDetail
 import com.nuvio.tv.ui.components.GridContentCard
 import com.nuvio.tv.ui.components.PosterCardStyle
 import com.nuvio.tv.ui.components.PosterCardDefaults
+import com.nuvio.tv.ui.components.LocalLandscapePosterMode
 import com.nuvio.tv.ui.components.rememberShimmerBrush
 import com.nuvio.tv.ui.screens.detail.requestFocusAfterFrames
 import java.text.SimpleDateFormat
@@ -121,6 +127,7 @@ fun CastDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(NuvioTheme.colors.Background)
     ) {
         Crossfade(
             targetState = uiState,
@@ -183,15 +190,49 @@ private fun CastDetailContent(
             .distinctBy { it.id }
             .sortedByDescending { releaseYearSortKey(it.releaseInfo) }
     }
+    val movieCredits = remember(person.movieCredits) {
+        person.movieCredits.sortedByDescending { releaseYearSortKey(it.releaseInfo) }
+    }
+    val seriesCredits = remember(person.tvCredits) {
+        person.tvCredits.sortedByDescending { releaseYearSortKey(it.releaseInfo) }
+    }
+    val showFilmographyFilter = movieCredits.isNotEmpty() && seriesCredits.isNotEmpty()
+    var filmographyFilter by rememberSaveable(person.tmdbId) { mutableStateOf(FilmographyFilter.ALL) }
+    val filterTabFocusRequesters = remember { FilmographyFilter.entries.associateWith { FocusRequester() } }
+    // Posters sit under the portrait, so geometric focus search would skip the tabs on D-pad up.
+    val filmographyUpFocusRequester = if (showFilmographyFilter) {
+        filterTabFocusRequesters.getValue(filmographyFilter)
+    } else {
+        FocusRequester.Default
+    }
+    val visibleCredits = when {
+        !showFilmographyFilter -> allCredits
+        filmographyFilter == FilmographyFilter.MOVIES -> movieCredits
+        filmographyFilter == FilmographyFilter.SERIES -> seriesCredits
+        else -> allCredits
+    }
+    // Initial focus goes to the first poster once per screen visit, not on every filter change.
+    val hasRequestedInitialFocus = remember { mutableStateOf(false) }
 
-    val filmographyPosterStyle = remember(posterCardCornerRadiusDp) {
-        PosterCardStyle(
-            width = 112.dp,
-            height = 168.dp,
-            cornerRadius = posterCardCornerRadiusDp.dp,
-            focusedBorderWidth = PosterCardDefaults.Style.focusedBorderWidth,
-            focusedScale = PosterCardDefaults.Style.focusedScale
-        )
+    val globalLandscape = LocalLandscapePosterMode.current
+    val filmographyPosterStyle = remember(posterCardCornerRadiusDp, globalLandscape) {
+        if (globalLandscape) {
+            PosterCardStyle(
+                width = 112.dp,
+                height = 240.dp,
+                cornerRadius = posterCardCornerRadiusDp.dp,
+                focusedBorderWidth = PosterCardDefaults.Style.focusedBorderWidth,
+                focusedScale = PosterCardDefaults.Style.focusedScale
+            )
+        } else {
+            PosterCardStyle(
+                width = 112.dp,
+                height = 168.dp,
+                cornerRadius = posterCardCornerRadiusDp.dp,
+                focusedBorderWidth = PosterCardDefaults.Style.focusedBorderWidth,
+                focusedScale = PosterCardDefaults.Style.focusedScale
+            )
+        }
     }
 
     val firstPosterFocusRequester = remember { FocusRequester() }
@@ -214,7 +255,7 @@ private fun CastDetailContent(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxSize().background(backgroundColor)) {
         // Left accent gradient overlay
         val accentGradient = remember(accentColor, backgroundColor) {
             Brush.horizontalGradient(
@@ -265,24 +306,37 @@ private fun CastDetailContent(
                     Column {
                         SectionHeader(
                             title = stringResource(R.string.cast_detail_filmography),
-                            count = allCredits.size
-                        )
-                        FilmographyRow(
-                            credits = allCredits,
-                            posterCardStyle = filmographyPosterStyle,
-                            firstItemFocusRequester = firstPosterFocusRequester,
-                            restoreItemId = pendingRestoreItemId,
-                            restoreFocusToken = restoreFocusToken,
-                            onRestoreFocusHandled = { pendingRestoreItemId = null },
-                            onItemClick = { item ->
-                                pendingRestoreItemId = item.id
-                                onNavigateToDetail(item.id, item.apiType, null)
-                            },
-                            onItemLongPress = { item ->
-                                posterOptions.show(item, null)
-                            },
-                            isItemWatched = isItemWatched
-                        )
+                            count = visibleCredits.size
+                        ) {
+                            if (showFilmographyFilter) {
+                                FilmographyFilterTabs(
+                                    selected = filmographyFilter,
+                                    tabFocusRequesters = filterTabFocusRequesters,
+                                    onSelect = { filmographyFilter = it }
+                                )
+                            }
+                        }
+                        // Recreate the row per filter so it starts scrolled to the beginning.
+                        key(filmographyFilter) {
+                            FilmographyRow(
+                                credits = visibleCredits,
+                                posterCardStyle = filmographyPosterStyle,
+                                firstItemFocusRequester = firstPosterFocusRequester,
+                                hasRequestedInitialFocus = hasRequestedInitialFocus,
+                                upFocusRequester = filmographyUpFocusRequester,
+                                restoreItemId = pendingRestoreItemId,
+                                restoreFocusToken = restoreFocusToken,
+                                onRestoreFocusHandled = { pendingRestoreItemId = null },
+                                onItemClick = { item ->
+                                    pendingRestoreItemId = item.id
+                                    onNavigateToDetail(item.id, item.apiType, null)
+                                },
+                                onItemLongPress = { item ->
+                                    posterOptions.show(item, null)
+                                },
+                                isItemWatched = isItemWatched
+                            )
+                        }
                     }
                 }
             }
@@ -429,7 +483,8 @@ private fun HeroSection(
                 text = person.name,
                 style = MaterialTheme.typography.headlineLarge.copy(
                     fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.5).sp
+                    letterSpacing = (-0.5).sp,
+                    textDirection = person.name.contentTextDirection()
                 ),
                 color = NuvioTheme.colors.TextPrimary,
                 maxLines = 1,
@@ -485,7 +540,8 @@ private fun HeroSection(
                         Text(
                             text = bio,
                             style = MaterialTheme.typography.bodyMedium.copy(
-                                lineHeight = 20.sp
+                                lineHeight = 20.sp,
+                                textDirection = bio.contentTextDirection()
                             ),
                             color = NuvioTheme.colors.TextSecondary,
                             modifier = Modifier.padding(end = NuvioTheme.spacing.md)
@@ -501,7 +557,8 @@ private fun HeroSection(
                     Text(
                         text = bio,
                         style = MaterialTheme.typography.bodyMedium.copy(
-                            lineHeight = 20.sp
+                            lineHeight = 20.sp,
+                            textDirection = bio.contentTextDirection()
                         ),
                         color = NuvioTheme.colors.TextSecondary,
                         maxLines = 5,
@@ -520,7 +577,11 @@ private fun HeroSection(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun SectionHeader(title: String, count: Int) {
+private fun SectionHeader(
+    title: String,
+    count: Int,
+    trailingContent: @Composable () -> Unit = {}
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -546,6 +607,46 @@ private fun SectionHeader(title: String, count: Int) {
                 )
                 .padding(horizontal = NuvioTheme.spacing.sm, vertical = NuvioTheme.spacing.xxs)
         )
+        Spacer(modifier = Modifier.width(NuvioTheme.spacing.lg))
+        trailingContent()
+    }
+}
+
+private enum class FilmographyFilter { ALL, MOVIES, SERIES }
+
+@OptIn(ExperimentalTvMaterial3Api::class, ExperimentalComposeUiApi::class)
+@Composable
+private fun FilmographyFilterTabs(
+    selected: FilmographyFilter,
+    tabFocusRequesters: Map<FilmographyFilter, FocusRequester>,
+    onSelect: (FilmographyFilter) -> Unit
+) {
+    val filters = FilmographyFilter.entries
+    TabRow(
+        selectedTabIndex = filters.indexOf(selected),
+        modifier = Modifier.focusRestorer { tabFocusRequesters.getValue(selected) }
+    ) {
+        filters.forEach { filter ->
+            Tab(
+                selected = filter == selected,
+                onFocus = { onSelect(filter) },
+                onClick = { onSelect(filter) },
+                modifier = Modifier.focusRequester(tabFocusRequesters.getValue(filter))
+            ) {
+                Text(
+                    text = when (filter) {
+                        FilmographyFilter.ALL -> stringResource(R.string.cast_detail_filter_all)
+                        FilmographyFilter.MOVIES -> stringResource(R.string.type_movies)
+                        FilmographyFilter.SERIES -> stringResource(R.string.type_series)
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(
+                        horizontal = NuvioTheme.spacing.lg,
+                        vertical = NuvioTheme.spacing.xs
+                    )
+                )
+            }
+        }
     }
 }
 
@@ -555,6 +656,8 @@ private fun FilmographyRow(
     credits: List<MetaPreview>,
     posterCardStyle: PosterCardStyle,
     firstItemFocusRequester: FocusRequester,
+    hasRequestedInitialFocus: androidx.compose.runtime.MutableState<Boolean>,
+    upFocusRequester: FocusRequester = FocusRequester.Default,
     restoreItemId: String? = null,
     restoreFocusToken: Int = 0,
     onRestoreFocusHandled: () -> Unit = {},
@@ -562,7 +665,6 @@ private fun FilmographyRow(
     onItemLongPress: (MetaPreview) -> Unit = {},
     isItemWatched: (MetaPreview) -> Boolean = { false }
 ) {
-    val hasRequestedInitialFocus = remember(credits) { mutableStateOf(false) }
     val restoreFocusRequester = remember { FocusRequester() }
     var restorePending by remember { mutableStateOf(false) }
     val lazyListState = rememberLazyListState()
@@ -606,16 +708,20 @@ private fun FilmographyRow(
                 onClick = { onItemClick(item) },
                 onLongPress = { onItemLongPress(item) },
                 isWatched = isItemWatched(item),
-                modifier = if (isFirstItem) {
-                    Modifier.onGloballyPositioned {
-                        if (!hasRequestedInitialFocus.value) {
-                            hasRequestedInitialFocus.value = true
-                            runCatching { firstItemFocusRequester.requestFocus() }
+                modifier = Modifier
+                    .focusProperties { up = upFocusRequester }
+                    .then(
+                        if (isFirstItem) {
+                            Modifier.onGloballyPositioned {
+                                if (!hasRequestedInitialFocus.value) {
+                                    hasRequestedInitialFocus.value = true
+                                    runCatching { firstItemFocusRequester.requestFocus() }
+                                }
+                            }
+                        } else {
+                            Modifier
                         }
-                    }
-                } else {
-                    Modifier
-                },
+                    ),
                 posterCardStyle = posterCardStyle,
                 showLabel = true,
                 focusRequester = itemFocusRequester,
@@ -639,7 +745,7 @@ private fun CastDetailSkeleton(personName: String) {
     val accentColor = NuvioTheme.colors.Secondary
     val shimmerBrush = rememberShimmerBrush()
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().background(backgroundColor)) {
         val accentGradient = remember(accentColor, backgroundColor) {
             Brush.horizontalGradient(
                 colorStops = arrayOf(
@@ -770,7 +876,9 @@ private fun CastDetailError(
     onRetry: () -> Unit
 ) {
     Box(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(NuvioTheme.colors.Background),
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {

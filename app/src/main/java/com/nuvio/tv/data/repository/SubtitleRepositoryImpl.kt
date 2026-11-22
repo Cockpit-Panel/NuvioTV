@@ -5,6 +5,7 @@ import android.util.Log
 import com.nuvio.tv.core.network.NetworkResult
 import com.nuvio.tv.core.network.safeApiCall
 import com.nuvio.tv.data.local.AddonPreferences
+import com.nuvio.tv.data.mediaserver.ServerItemRef
 import com.nuvio.tv.data.remote.api.AddonApi
 import com.nuvio.tv.domain.model.Addon
 import com.nuvio.tv.domain.model.Subtitle
@@ -43,6 +44,7 @@ class SubtitleRepositoryImpl @Inject constructor(
         onProgress: ((completed: Int, total: Int, addonName: String?) -> Unit)?,
         onSubtitlesEmitted: ((List<Subtitle>) -> Unit)?
     ): List<Subtitle> = withContext(Dispatchers.IO) {
+        if (ServerItemRef.isServerId(id) || ServerItemRef.isServerId(videoId)) return@withContext emptyList()
         val requestType = canonicalSubtitleType(type)
         val startedAtMs = System.currentTimeMillis()
         Log.d(TAG, "Fetching subtitles for type=$requestType, id=$id, videoId=$videoId")
@@ -198,7 +200,9 @@ class SubtitleRepositoryImpl @Inject constructor(
                             url = url,
                             lang = lang,
                             addonName = addon.displayName,
-                            addonLogo = addon.logo
+                            addonLogo = addon.logo,
+                            headers = dto.headers,
+                            label = dto.label?.trim()?.takeIf { it.isNotBlank() }
                         )
                     } ?: emptyList()
                     

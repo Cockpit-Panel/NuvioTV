@@ -1,11 +1,17 @@
 package com.nuvio.tv.ui.screens.settings
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.nuvio.tv.core.runtime.AppRestarter
+import com.nuvio.tv.data.local.DeviceLocalPlayerPreferences
+import com.nuvio.tv.data.local.ImagePerformancePreferences
 import com.nuvio.tv.data.local.LayoutPreferenceDataStore
 import com.nuvio.tv.data.local.PlayerSettingsDataStore
 import com.nuvio.tv.data.local.SentrySettingsDataStore
+import coil3.SingletonImageLoader
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,6 +25,9 @@ data class AdvancedSettingsUiState(
     val smoothBringIntoViewEnabled: Boolean = true,
     val composeHighlighterEnabled: Boolean = false,
     val playbackIssueReportsEnabled: Boolean = false,
+    val playerStatsHudEnabled: Boolean = false,
+    val rgb565Enabled: Boolean = true,
+    val hardwareBitmapsEnabled: Boolean = false,
     val sentryEnabled: Boolean = true
 )
 
@@ -27,6 +36,9 @@ sealed class AdvancedSettingsEvent {
     data class SetSmoothBringIntoViewEnabled(val enabled: Boolean) : AdvancedSettingsEvent()
     data class SetComposeHighlighterEnabled(val enabled: Boolean) : AdvancedSettingsEvent()
     data class SetPlaybackIssueReportsEnabled(val enabled: Boolean) : AdvancedSettingsEvent()
+    data class SetPlayerStatsHudEnabled(val enabled: Boolean) : AdvancedSettingsEvent()
+    data class SetRgb565Enabled(val enabled: Boolean) : AdvancedSettingsEvent()
+    data class SetHardwareBitmapsEnabled(val enabled: Boolean) : AdvancedSettingsEvent()
     data class SetSentryEnabled(val enabled: Boolean) : AdvancedSettingsEvent()
 }
 
@@ -34,12 +46,22 @@ sealed class AdvancedSettingsEvent {
 class AdvancedSettingsViewModel @Inject constructor(
     private val layoutPreferenceDataStore: LayoutPreferenceDataStore,
     private val playerSettingsDataStore: PlayerSettingsDataStore,
-    private val sentrySettingsDataStore: SentrySettingsDataStore
+    private val deviceLocalPlayerPreferences: DeviceLocalPlayerPreferences,
+    private val sentrySettingsDataStore: SentrySettingsDataStore,
+    private val imagePerformancePreferences: ImagePerformancePreferences,
+    private val appRestarter: AppRestarter,
+    @param:ApplicationContext private val appContext: Context
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(AdvancedSettingsUiState())
     val uiState: StateFlow<AdvancedSettingsUiState> = _uiState.asStateFlow()
 
     init {
+        _uiState.update {
+            it.copy(
+                rgb565Enabled = imagePerformancePreferences.rgb565Enabled,
+                hardwareBitmapsEnabled = imagePerformancePreferences.hardwareBitmapsEnabled
+            )
+        }
         viewModelScope.launch {
             layoutPreferenceDataStore.fastHorizontalNavigationEnabled.collectLatest { enabled ->
                 _uiState.update { it.copy(fastHorizontalNavigationEnabled = enabled) }
@@ -58,6 +80,11 @@ class AdvancedSettingsViewModel @Inject constructor(
         viewModelScope.launch {
             playerSettingsDataStore.playerSettings.collectLatest { settings ->
                 _uiState.update { it.copy(playbackIssueReportsEnabled = settings.playbackIssueReportsEnabled) }
+            }
+        }
+        viewModelScope.launch {
+            deviceLocalPlayerPreferences.playerStatsHudEnabled.collectLatest { enabled ->
+                _uiState.update { it.copy(playerStatsHudEnabled = enabled) }
             }
         }
         viewModelScope.launch {
@@ -87,6 +114,23 @@ class AdvancedSettingsViewModel @Inject constructor(
             is AdvancedSettingsEvent.SetPlaybackIssueReportsEnabled -> {
                 viewModelScope.launch {
                     playerSettingsDataStore.setPlaybackIssueReportsEnabled(event.enabled)
+                }
+            }
+            is AdvancedSettingsEvent.SetPlayerStatsHudEnabled -> {
+                viewModelScope.launch {
+                    deviceLocalPlayerPreferences.setPlayerStatsHudEnabled(event.enabled)
+                }
+            }
+            is AdvancedSettingsEvent.SetRgb565Enabled -> {
+                if (imagePerformancePreferences.setRgb565Enabled(event.enabled)) {
+                    _uiState.update { it.copy(rgb565Enabled = event.enabled) }
+                    appRestarter.restart()
+                }
+            }
+            is AdvancedSettingsEvent.SetHardwareBitmapsEnabled -> {
+                if (imagePerformancePreferences.setHardwareBitmapsEnabled(event.enabled)) {
+                    _uiState.update { it.copy(hardwareBitmapsEnabled = event.enabled) }
+                    SingletonImageLoader.get(appContext).memoryCache?.clear()
                 }
             }
             is AdvancedSettingsEvent.SetSentryEnabled -> {

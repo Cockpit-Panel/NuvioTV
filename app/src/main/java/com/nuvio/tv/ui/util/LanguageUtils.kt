@@ -3,8 +3,15 @@ package com.nuvio.tv.ui.util
 import android.content.Context
 import com.nuvio.tv.R
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 private val EPISODE_PATTERN = Regex("^Episode (\\d+)$", RegexOption.IGNORE_CASE)
+private val WHITESPACE = Regex("\\s+")
+private const val LANGUAGE_NAME_CACHE_LIMIT = 2_000
+private val languageNameCache = ConcurrentHashMap<String, String>()
+private val LANGUAGE_NAME_ALIASES_LONGEST_FIRST by lazy {
+    LANGUAGE_NAME_ALIASES.entries.sortedByDescending { it.key.length }
+}
 
 fun String.localizeEpisodeTitle(appContext: Context): String {
     val match = EPISODE_PATTERN.matchEntire(this.trim()) ?: return this
@@ -41,6 +48,9 @@ internal val LANGUAGE_OVERRIDES = mapOf(
     "rus" to "ru",
     "pol" to "pl",
     "spa" to "es",
+    "spn" to "es",
+    "sp" to "es",
+    "esp" to "es",
     "spl" to "es-419",
     "es-419" to "es-419",
     "es_419" to "es-419",
@@ -57,6 +67,8 @@ internal val LANGUAGE_OVERRIDES = mapOf(
     "ell" to "el",
     "gre" to "el",
     "heb" to "he",
+    "hbo" to "he",
+    "iw" to "he",
     "tha" to "th",
     "vie" to "vi",
     "ind" to "id",
@@ -71,11 +83,18 @@ internal val LANGUAGE_OVERRIDES = mapOf(
     "bul" to "bg",
     "hrv" to "hr",
     "srp" to "sr",
+    "cnr" to "sr-ME",
+    "mne" to "sr-ME",
+    "me" to "sr-ME",
     "slk" to "sk",
     "slo" to "sk",
     "slv" to "sl",
     "zht" to "zh-TW",
     "zhs" to "zh-CN",
+    "zhc" to "zh-ca",
+    "zc" to "zh-ca",
+    "yue" to "zh-ca",
+    "zh-ca" to "zh-ca",
     "chi-tw" to "zh-TW",
     "chi-cn" to "zh-CN",
     "zh-tw" to "zh-TW",
@@ -134,15 +153,129 @@ internal val LANGUAGE_OVERRIDES = mapOf(
     "fil" to "tl"
 )
 
+internal val LANGUAGE_NAME_ALIASES = mapOf(
+    "afrikaans" to "af",
+    "albanian" to "sq",
+    "amharic" to "am",
+    "arabic" to "ar",
+    "armenian" to "hy",
+    "azerbaijani" to "az",
+    "basque" to "eu",
+    "belarusian" to "be",
+    "bengali" to "bn",
+    "bosnian" to "bs",
+    "bulgarian" to "bg",
+    "burmese" to "my",
+    "cantonese" to "zh-ca",
+    "catalan" to "ca",
+    "chinese" to "zh",
+    "chinese (cantonese)" to "zh-ca",
+    "mandarin" to "zh",
+    "croatian" to "hr",
+    "czech" to "cs",
+    "danish" to "da",
+    "dutch" to "nl",
+    "english" to "en",
+    "estonian" to "et",
+    "filipino" to "tl",
+    "finnish" to "fi",
+    "french" to "fr",
+    "galician" to "gl",
+    "georgian" to "ka",
+    "german" to "de",
+    "greek" to "el",
+    "gujarati" to "gu",
+    "hebrew" to "he",
+    "hindi" to "hi",
+    "hungarian" to "hu",
+    "icelandic" to "is",
+    "indonesian" to "id",
+    "irish" to "ga",
+    "italian" to "it",
+    "japanese" to "ja",
+    "kannada" to "kn",
+    "kazakh" to "kk",
+    "khmer" to "km",
+    "korean" to "ko",
+    "lao" to "lo",
+    "latvian" to "lv",
+    "lithuanian" to "lt",
+    "macedonian" to "mk",
+    "malay" to "ms",
+    "malayalam" to "ml",
+    "maltese" to "mt",
+    "marathi" to "mr",
+    "mongolian" to "mn",
+    "montenegrin" to "sr-me",
+    "nepali" to "ne",
+    "norwegian" to "no",
+    "persian" to "fa",
+    "polish" to "pl",
+    "punjabi" to "pa",
+    "romanian" to "ro",
+    "russian" to "ru",
+    "serbian" to "sr",
+    "sinhala" to "si",
+    "slovak" to "sk",
+    "slovenian" to "sl",
+    "swahili" to "sw",
+    "swedish" to "sv",
+    "tamil" to "ta",
+    "telugu" to "te",
+    "thai" to "th",
+    "turkish" to "tr",
+    "ukrainian" to "uk",
+    "urdu" to "ur",
+    "uzbek" to "uz",
+    "vietnamese" to "vi",
+    "welsh" to "cy",
+    "zulu" to "zu"
+)
+
+internal fun resolveLanguageNameAlias(tokenized: String): String? {
+    if (tokenized.isBlank()) return null
+    LANGUAGE_NAME_ALIASES[tokenized]?.let { return it }
+    return LANGUAGE_NAME_ALIASES_LONGEST_FIRST
+        .firstOrNull { (name, _) ->
+            tokenized == name ||
+                tokenized.startsWith("$name ") ||
+                tokenized.endsWith(" $name") ||
+                tokenized.contains(" $name ")
+        }
+        ?.value
+}
+
 fun languageCodeToName(code: String): String {
+    val key = "${Locale.getDefault().toLanguageTag()}|$code"
+    languageNameCache[key]?.let { return it }
+    if (languageNameCache.size >= LANGUAGE_NAME_CACHE_LIMIT) languageNameCache.clear()
+    return resolveLanguageCodeToName(code).also { languageNameCache[key] = it }
+}
+
+private fun resolveLanguageCodeToName(code: String): String {
     val lowerCode = code.lowercase()
     if (lowerCode == "none") return "None"
     if (lowerCode == "und" || lowerCode == "unknown" || lowerCode == "unk") {
         return "Unknown"
     }
     LANGUAGE_DISPLAY_OVERRIDES[lowerCode]?.let { return it }
-    val bcp47 = LANGUAGE_OVERRIDES[lowerCode] ?: lowerCode
+    val tokenized = lowerCode
+        .replace('_', ' ')
+        .replace('-', ' ')
+        .replace('.', ' ')
+        .replace('/', ' ')
+        .replace(WHITESPACE, " ")
+        .trim()
+    val bcp47 = LANGUAGE_OVERRIDES[lowerCode]
+        ?: resolveLanguageNameAlias(tokenized)
+        ?: lowerCode.replace('_', '-')
     LANGUAGE_DISPLAY_OVERRIDES[bcp47]?.let { return it }
+    // OpenSubtitles uses zh-ca for Cantonese. Locale treats "CA" as Canada.
+    if (bcp47.equals("zh-ca", ignoreCase = true)) {
+        val chinese = Locale.forLanguageTag("zh").getDisplayLanguage(Locale.getDefault())
+        val cantonese = Locale.forLanguageTag("yue").getDisplayLanguage(Locale.getDefault())
+        return "$chinese ($cantonese)"
+    }
     return try {
         val locale = Locale.forLanguageTag(bcp47)
         val name = if (locale.country.isNotEmpty()) {

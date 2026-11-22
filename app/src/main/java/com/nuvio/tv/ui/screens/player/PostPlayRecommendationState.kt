@@ -48,7 +48,8 @@ data class PostPlayRecommendationUiState(
     val hasReturnedToPlayer: Boolean = false,
     val countdownSeconds: Int? = null,
     val isTrailerPlaying: Boolean = false,
-    val hasAutoPlayedTrailer: Boolean = false
+    val hasAutoPlayedTrailer: Boolean = false,
+    val mdbListRatingOrder: List<String> = com.nuvio.tv.domain.model.MDBListSettings.DEFAULT_RATING_ORDER
 ) {
     val canNavigatePrevious: Boolean
         get() = !isChangingRecommendation && recommendationIndex > 0
@@ -60,7 +61,7 @@ data class PostPlayRecommendationUiState(
         get() = isVisible && !isTrailerPlaying && !hasAutoPlayedTrailer
 
     val blocksNaturalCompletion: Boolean
-        get() = recommendation != null || isVisible || hasReturnedToPlayer || isLoadingRecommendation
+        get() = isVisible || (isLoadingRecommendation && !hasReturnedToPlayer)
 }
 
 internal fun PostPlayRecommendationUiState.returnToPlayer(): PostPlayRecommendationUiState {
@@ -78,6 +79,8 @@ internal fun PlayerUiState.blocksPostPlayRecommendation(): Boolean {
         showStreamInfoOverlay ||
         showEpisodesPanel ||
         showSourcesPanel ||
+        showChaptersPanel ||
+        showPartyPanel ||
         showAudioOverlay ||
         showSubtitleOverlay ||
         showSubtitleStylePanel ||
@@ -94,13 +97,14 @@ internal const val POST_PLAY_RECOMMENDATION_TRANSITION_MS = 420
 
 internal fun shouldPrefetchPostPlayRecommendation(
     positionMs: Long,
-    durationMs: Long
+    durationMs: Long,
+    progressThreshold: Float = POST_PLAY_RECOMMENDATION_PREFETCH_PROGRESS
 ): Boolean {
     if (durationMs <= 0L) return false
     val position = positionMs.coerceIn(0L, durationMs)
     val remaining = durationMs - position
     val progress = position.toDouble() / durationMs.toDouble()
-    return progress >= POST_PLAY_RECOMMENDATION_PREFETCH_PROGRESS ||
+    return progress >= progressThreshold.coerceIn(0f, 1f) ||
         remaining <= POST_PLAY_RECOMMENDATION_PREFETCH_REMAINING_MS
 }
 
@@ -120,10 +124,16 @@ internal fun shouldUsePostPlayRecommendation(
     contentType: String?,
     isNextEpisodeMetadataResolved: Boolean,
     nextEpisodeHasAired: Boolean?,
+    nextEpisodeAvailable: Boolean? = null,
+    nextEpisodeReleased: String? = "",
     enabled: Boolean = true
 ): Boolean = enabled && when (resolvePostPlayContentType(contentType)) {
     ContentType.MOVIE -> true
-    ContentType.SERIES -> isNextEpisodeMetadataResolved && nextEpisodeHasAired != true
+    ContentType.SERIES -> {
+        if (!isNextEpisodeMetadataResolved) false
+        else if (nextEpisodeHasAired != true) true
+        else nextEpisodeReleased.isNullOrBlank() && nextEpisodeAvailable == false
+    }
     else -> false
 }
 

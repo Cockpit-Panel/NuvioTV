@@ -166,16 +166,6 @@ fun TmdbSettingsContent(
                     )
                 }
 
-                item(key = "tmdb_release_dates") {
-                    SettingsToggleRow(
-                        title = stringResource(R.string.tmdb_release_dates_title),
-                        subtitle = stringResource(R.string.tmdb_release_dates_subtitle),
-                        checked = uiState.useReleaseDates,
-                        enabled = uiState.enabled,
-                        onToggle = { viewModel.onEvent(TmdbSettingsEvent.ToggleReleaseDates(!uiState.useReleaseDates)) }
-                    )
-                }
-
                 item(key = "tmdb_credits") {
                     SettingsToggleRow(
                         title = stringResource(R.string.tmdb_credits_title),
@@ -213,6 +203,16 @@ fun TmdbSettingsContent(
                         checked = uiState.useEpisodes,
                         enabled = uiState.enabled,
                         onToggle = { viewModel.onEvent(TmdbSettingsEvent.ToggleEpisodes(!uiState.useEpisodes)) }
+                    )
+                }
+
+                item(key = "tmdb_season_posters") {
+                    SettingsToggleRow(
+                        title = stringResource(R.string.tmdb_season_posters_title),
+                        subtitle = stringResource(R.string.tmdb_season_posters_subtitle),
+                        checked = uiState.useSeasonPosters,
+                        enabled = uiState.enabled,
+                        onToggle = { viewModel.onEvent(TmdbSettingsEvent.ToggleSeasonPosters(!uiState.useSeasonPosters)) }
                     )
                 }
 

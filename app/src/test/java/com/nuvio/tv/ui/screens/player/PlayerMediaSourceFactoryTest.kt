@@ -1,13 +1,44 @@
 package com.nuvio.tv.ui.screens.player
 
+import androidx.media3.common.C
 import androidx.media3.common.MimeTypes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Base64
 
 class PlayerMediaSourceFactoryTest {
+
+    @Test
+    fun `media segment 404 with an alternative prefers another HLS track`() {
+        assertTrue(
+            shouldPreferAlternativeHlsTrack(
+                responseCode = 404,
+                dataType = C.DATA_TYPE_MEDIA,
+                alternativeTrackAvailable = true
+            )
+        )
+    }
+
+    @Test
+    fun `manifest errors and missing alternatives do not trigger rendition fallback`() {
+        assertFalse(
+            shouldPreferAlternativeHlsTrack(
+                responseCode = 404,
+                dataType = C.DATA_TYPE_MANIFEST,
+                alternativeTrackAvailable = true
+            )
+        )
+        assertFalse(
+            shouldPreferAlternativeHlsTrack(
+                responseCode = 404,
+                dataType = C.DATA_TYPE_MEDIA,
+                alternativeTrackAvailable = false
+            )
+        )
+    }
 
     @Test
     fun `inferMimeType prefers response content type for manifest urls without extension`() {
@@ -49,6 +80,35 @@ class PlayerMediaSourceFactoryTest {
         )
 
         assertEquals(MimeTypes.APPLICATION_M3U8, mimeType)
+    }
+
+    @Test
+    fun `inferMimeType recognizes percent encoded DASH MIME query values`() {
+        for (key in listOf("format", "mime", "mime_type", "content_type", "type")) {
+            val url = "https://example.com/playback?$key=application%2Fdash%2Bxml"
+            assertEquals(
+                url,
+                MimeTypes.APPLICATION_MPD,
+                PlayerMediaSourceFactory.inferMimeType(url = url, filename = null)
+            )
+        }
+    }
+
+    @Test
+    fun `inferMimeType preserves literal MIME plus signs and tolerates invalid escapes`() {
+        assertEquals(
+            MimeTypes.APPLICATION_MPD,
+            PlayerMediaSourceFactory.inferMimeType(
+                url = "https://example.com/playback?mime=application/dash+xml",
+                filename = null
+            )
+        )
+        assertNull(
+            PlayerMediaSourceFactory.inferMimeType(
+                url = "https://example.com/playback?mime=%ZZ",
+                filename = null
+            )
+        )
     }
 
     @Test
@@ -166,6 +226,21 @@ class PlayerMediaSourceFactoryTest {
 
         assertEquals("https://webdav.example.org/files/title.mkv", request.url)
         assertEquals(userInfo.basicAuthHeader(), request.headers["Authorization"])
+    }
+
+    @Test
+    fun `isLoopbackUrl returns true for engine and local proxy loopback streams`() {
+        assertTrue(PlayerMediaSourceFactory.isLoopbackUrl("http://127.0.0.1:51234/stream/movie.mkv"))
+        assertTrue(PlayerMediaSourceFactory.isLoopbackUrl("http://localhost:51234/stream/movie.mkv"))
+        assertTrue(PlayerMediaSourceFactory.isLoopbackUrl("http://[::1]:51234/stream/movie.mkv"))
+        assertTrue(PlayerMediaSourceFactory.isLoopbackUrl("http://127.0.0.1:8080/stream/video.mkv?token=abc"))
+    }
+
+    @Test
+    fun `isLoopbackUrl returns false for external and non-loopback urls`() {
+        assertFalse(PlayerMediaSourceFactory.isLoopbackUrl("https://debrid.example.com/stream/movie.mkv"))
+        assertFalse(PlayerMediaSourceFactory.isLoopbackUrl("http://192.168.1.100:8091/stream?link=123"))
+        assertFalse(PlayerMediaSourceFactory.isLoopbackUrl(""))
     }
 
     private fun String.basicAuthHeader(): String =

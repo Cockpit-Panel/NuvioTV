@@ -18,7 +18,13 @@ data class UpdateUiState(
     val showUnknownSourcesDialog: Boolean = false,
     val errorMessage: String? = null,
     val feedbackMessage: String? = null,
-    val updateBannerEnabled: Boolean = false
+    val updateBannerEnabled: Boolean = false,
+    val updateChannel: UpdateChannel = UpdateChannel.STABLE,
+    val autoInstallEnabled: Boolean = false,
+    val autoInstallSupported: Boolean = false,
+    val autoInstallNoticeEnabled: Boolean = false,
+    val optimizeDuringInstall: Boolean = false,
+    val optimizeDuringInstallSupported: Boolean = false
 )
 
 @HiltViewModel
@@ -36,9 +42,17 @@ class UpdateViewModel @Inject constructor() : ViewModel() {
 
     fun setUpdateBannerEnabled(enabled: Boolean) = Unit
 
+    fun setUpdateChannel(channel: UpdateChannel) = Unit
+
     fun downloadUpdate() = Unit
 
     fun installUpdateOrRequestPermission() = Unit
 
     fun openUnknownSourcesSettings() = Unit
+
+    fun setAutoInstallEnabled(enabled: Boolean) = Unit
+
+    fun setAutoInstallNoticeEnabled(enabled: Boolean) = Unit
+
+    fun setOptimizeDuringInstall(enabled: Boolean) = Unit
 }

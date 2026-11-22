@@ -35,7 +35,13 @@ internal data class PlayerNavigationArgs(
     val cloudSessionToken: String?,
     val rememberedAudioLanguage: String?,
     val rememberedAudioName: String?,
-    val launchStartedAtMs: Long?
+    val launchStartedAtMs: Long?,
+    val profileId: Int?,
+    val audioDelayMs: Int? = null,
+    val audioDelayLanguage: String? = null,
+    val fromLinkCache: Boolean = false,
+    /** The source was picked by auto source selection (or reused from the link cache). */
+    val autoPlayNav: Boolean = false
 ) {
     val torrentTrackers: List<String>
         get() {
@@ -94,7 +100,12 @@ internal data class PlayerNavigationArgs(
                 cloudSessionToken = decodedOrNull("cloudSessionToken"),
                 rememberedAudioLanguage = decodedOrNull("rememberedAudioLanguage"),
                 rememberedAudioName = decodedOrNull("rememberedAudioName"),
-                launchStartedAtMs = savedStateHandle.get<String>("launchStartedAtMs")?.toLongOrNull()
+                launchStartedAtMs = savedStateHandle.get<String>("launchStartedAtMs")?.toLongOrNull(),
+                profileId = savedStateHandle.get<String>("profileId")?.toIntOrNull(),
+                audioDelayMs = savedStateHandle.get<String>("audioDelayMs")?.toIntOrNull(),
+                audioDelayLanguage = decodedOrNull("audioDelayLanguage"),
+                fromLinkCache = savedStateHandle.get<String>("fromLinkCache")?.toBooleanStrictOrNull() == true,
+                autoPlayNav = savedStateHandle.get<String>("autoPlayNav")?.toBooleanStrictOrNull() == true
             )
         }
     }

@@ -10,12 +10,14 @@ import com.nuvio.tv.core.logging.bodySnippetForLog
 import com.nuvio.tv.core.logging.diagnosticSummary
 import com.nuvio.tv.core.logging.rawForLog
 import com.nuvio.tv.core.logging.urlForLog
+import com.nuvio.tv.core.util.findCause
 import com.nuvio.tv.data.local.AuthSessionNoticeDataStore
 import com.nuvio.tv.data.local.PanelSession
 import com.nuvio.tv.data.local.PanelSessionDataStore
 import com.nuvio.tv.data.remote.api.PanelCloudApi
 import com.nuvio.tv.data.remote.panel.PanelLoginRequest
 import com.nuvio.tv.data.remote.panel.PanelPortalDto
+import com.nuvio.tv.data.remote.supabase.DeviceLoginStartResult
 import com.nuvio.tv.data.remote.supabase.TvLoginExchangeResult
 import com.nuvio.tv.data.remote.supabase.TvLoginPollResult
 import com.nuvio.tv.data.remote.supabase.TvLoginStartResult
@@ -62,6 +64,7 @@ private const val TAG = "AuthManager"
 private const val AUTH_ENDPOINT_SIGNUP = "/auth/v1/signup"
 private const val AUTH_ENDPOINT_PASSWORD = "/auth/v1/token?grant_type=password"
 private const val AUTH_ENDPOINT_REFRESH = "/auth/v1/token?grant_type=refresh_token"
+private const val AUTH_ENDPOINT_START_DEVICE_LOGIN = "/rest/v1/rpc/start_device_login_session"
 private const val AUTH_ENDPOINT_START_TV_LOGIN = "/rest/v1/rpc/start_tv_login_session"
 private const val AUTH_ENDPOINT_POLL_TV_LOGIN = "/rest/v1/rpc/poll_tv_login_session"
 private const val AUTH_ENDPOINT_EXCHANGE_TV_LOGIN = "/functions/v1/tv-logins-exchange"
@@ -396,28 +399,50 @@ class AuthManager @Inject constructor(
     suspend fun getPanelPortals(): Result<List<PanelPortalDto>> = runCatching {
         check(isPanelCloudConfigured()) { "Panel cloud API URL is not configured" }
         val response = panelCloudApi.getPortals()
-        check(response.isSuccessful) { response.errorBody()?.string().orEmpty().ifBlank { "Failed to load service list" } }
+        check(response.isSuccessful) {
+            response.errorBody()?.string().orEmpty().ifBlank { "Failed to load service list" }
+        }
         response.body()?.portals ?: error("Empty portals response")
     }
 
-    suspend fun signInWithPanel(portal: PanelPortalDto, username: String, password: String, deviceName: String? = null): Result<Unit> = runCatching {
+    suspend fun signInWithPanel(
+        portal: PanelPortalDto,
+        username: String,
+        password: String,
+        deviceName: String? = null
+    ): Result<Unit> = runCatching {
         check(isPanelCloudConfigured()) { "Panel cloud API URL is not configured" }
         val normalizedUsername = username.trim()
         val attempts = listOf(
             PanelLoginRequest(username = normalizedUsername, password = password),
-            PanelLoginRequest(serverUrl = portal.url.trim().ifBlank { null }, username = normalizedUsername, password = password, deviceName = deviceName)
+            PanelLoginRequest(
+                serverUrl = portal.url.trim().ifBlank { null },
+                username = normalizedUsername,
+                password = password,
+                deviceName = deviceName
+            )
         ).distinct()
         var lastError = "Panel login failed"
         var body: com.nuvio.tv.data.remote.panel.PanelLoginResponse? = null
         for (request in attempts) {
             val response = panelCloudApi.login(request)
-            if (response.isSuccessful) { body = response.body(); break }
-            lastError = response.errorBody()?.string().orEmpty().ifBlank { "Panel login failed (${response.code()})" }
+            if (response.isSuccessful) {
+                body = response.body()
+                break
+            }
+            lastError = response.errorBody()?.string().orEmpty()
+                .ifBlank { "Panel login failed (${response.code()})" }
         }
         val login = body ?: error(lastError)
-        val session = PanelSession(login.tokens.accessToken, login.tokens.refreshToken, login.user.id,
-            login.user.email.ifBlank { normalizedUsername }, login.user.displayName,
-            login.user.serverUrl ?: portal.url, login.user.serviceId ?: portal.id)
+        val session = PanelSession(
+            accessToken = login.tokens.accessToken,
+            refreshToken = login.tokens.refreshToken,
+            userId = login.user.id,
+            email = login.user.email.ifBlank { normalizedUsername },
+            displayName = login.user.displayName,
+            serverUrl = login.user.serverUrl ?: portal.url,
+            serviceId = login.user.serviceId ?: portal.id
+        )
         panelSessionDataStore.save(session)
         currentPanelSession = session
         _authState.value = AuthState.FullAccount(session.userId, session.email)
@@ -428,8 +453,7 @@ class AuthManager @Inject constructor(
         val session = currentPanelSession ?: panelSessionDataStore.getSession() ?: return true
         currentPanelSession = session
         return try {
-            val authorization = "Bearer ${session.accessToken}"
-            val validation = panelCloudApi.getAddons(authorization, 1)
+            val validation = panelCloudApi.getAddons("Bearer ${session.accessToken}", 1)
             if (validation.code() == 401 || validation.code() == 403) {
                 Log.w(TAG, "Panel account is no longer active; clearing local authentication")
                 signOut(explicit = false)
@@ -459,7 +483,8 @@ class AuthManager @Inject constructor(
         Log.i(TAG, "Updated panel service endpoint for stable service id=$serviceId")
     }
 
-    suspend fun getAccessToken(): String? = currentPanelSession?.accessToken ?: auth.currentAccessTokenOrNull()
+    suspend fun getAccessToken(): String? =
+        currentPanelSession?.accessToken ?: auth.currentAccessTokenOrNull()
 
     suspend fun signOut(explicit: Boolean = true) {
         sessionValidator.reset()
@@ -633,6 +658,67 @@ class AuthManager @Inject constructor(
                 Log.w(TAG, "Supabase session refresh failed transiently", refreshError)
             }
             SessionRefreshOutcome(result, refreshError)
+        }
+    }
+
+    suspend fun startDeviceLoginSession(
+        deviceNonce: String,
+        deviceName: String?,
+        deviceType: String,
+        redirectBaseUrl: String,
+        legacyRedirectBaseUrl: String,
+        traceId: Long? = null,
+        diagnostics: AuthDiagnosticsSession? = null
+    ): Result<DeviceLoginStartResult> {
+        val startedAtMs = SystemClock.elapsedRealtime()
+        val trace = qrTrace(traceId)
+        return try {
+            val params = buildJsonObject {
+                put("p_device_nonce", deviceNonce)
+                put("p_redirect_base_url", redirectBaseUrl)
+                put("p_device_type", deviceType)
+                if (!deviceName.isNullOrBlank()) put("p_device_name", deviceName)
+            }
+            Log.d(TAG, "$trace startDeviceLoginSession begin nonce=${deviceNonce.rawForLog()} deviceType=$deviceType redirect=${redirectBaseUrl.urlForLog()}")
+            val body = executeSupabaseJsonRequest(
+                diagnostics = diagnostics,
+                endpoint = AUTH_ENDPOINT_START_DEVICE_LOGIN,
+                url = supabaseUrl(AUTH_ENDPOINT_START_DEVICE_LOGIN),
+                headers = supabaseHeaders(),
+                body = params.toString()
+            ).body
+            val results = json.decodeFromString<List<DeviceLoginStartResult>>(body)
+            val result = results.firstOrNull()
+                ?: throw Exception("Empty response from start_device_login_session")
+            Log.d(TAG, "$trace startDeviceLoginSession ok elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs} deviceCode=${result.deviceCode.rawForLog()} userCode=${result.userCode.rawForLog()} url=${result.verificationUriComplete.urlForLog()}")
+            Result.success(result)
+        } catch (error: Exception) {
+            val message = error.message.orEmpty().lowercase()
+            val missingV2 = message.contains("could not find the function") &&
+                message.contains("start_device_login_session")
+            if (!missingV2) {
+                Log.e(TAG, "$trace startDeviceLoginSession failed elapsedMs=${SystemClock.elapsedRealtime() - startedAtMs} error=${error.diagnosticSummary()}", error)
+                return Result.failure(error)
+            }
+
+            Log.w(TAG, "$trace startDeviceLoginSession unavailable; falling back to legacy TV login")
+            startTvLoginSession(
+                deviceNonce = deviceNonce,
+                deviceName = deviceName,
+                redirectBaseUrl = legacyRedirectBaseUrl,
+                traceId = traceId,
+                diagnostics = diagnostics
+            ).map { legacy ->
+                DeviceLoginStartResult(
+                    deviceCode = legacy.code,
+                    userCode = legacy.code,
+                    verificationUri = legacyRedirectBaseUrl,
+                    verificationUriComplete = legacy.webUrl,
+                    expiresAt = legacy.expiresAt,
+                    pollIntervalSeconds = legacy.pollIntervalSeconds,
+                    legacy = true
+                )
+            }
         }
     }
 
@@ -1017,15 +1103,6 @@ private fun Throwable.shouldRetryWithAuthFallback(): Boolean {
 
 private inline fun <reified T : Throwable> Throwable.hasCause(): Boolean =
     findCause<T>() != null
-
-private inline fun <reified T : Throwable> Throwable.findCause(): T? {
-    var current: Throwable? = this
-    while (current != null) {
-        if (current is T) return current
-        current = current.cause
-    }
-    return null
-}
 
 private fun Throwable.causeMessages(): String {
     val messages = mutableListOf<String>()

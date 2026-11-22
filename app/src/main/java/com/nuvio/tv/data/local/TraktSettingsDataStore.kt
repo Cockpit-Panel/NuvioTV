@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.nuvio.tv.core.profile.ProfileManager
+import com.nuvio.tv.core.tracking.TrackingProviderId
 import com.nuvio.tv.data.simkl.SimklAnimeIdPreference
 import com.nuvio.tv.domain.model.LibrarySourceMode
 import kotlinx.coroutines.CoroutineScope
@@ -15,6 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -24,6 +26,7 @@ import javax.inject.Singleton
 enum class WatchProgressSource {
     TRAKT,
     SIMKL,
+    MDBLIST,
     NUVIO_SYNC;
 
     companion object {
@@ -35,7 +38,8 @@ enum class WatchProgressSource {
 
 enum class MoreLikeThisSourcePreference {
     TRAKT,
-    TMDB
+    TMDB,
+    SIMKL
 }
 
 @Singleton
@@ -69,8 +73,11 @@ class TraktSettingsDataStore @Inject constructor(
     private val showMetaCommentsKey = booleanPreferencesKey("show_meta_comments")
     private val watchProgressSourceKey = stringPreferencesKey("watch_progress_source")
     private val librarySourceModeKey = stringPreferencesKey("library_source_mode")
+    private val rememberedWatchProgressSourceKey = stringPreferencesKey("remembered_watch_progress_source")
+    private val rememberedLibrarySourceModeKey = stringPreferencesKey("remembered_library_source_mode")
     private val moreLikeThisSourceKey = stringPreferencesKey("more_like_this_source")
     private val simklAnimeIdPreferenceKey = stringPreferencesKey("simkl_anime_id_preference")
+    private val ratingSourceKey = stringPreferencesKey("rating_source")
 
     val continueWatchingDaysCap: Flow<Int> = profileManager.activeProfileId.flatMapLatest { pid ->
         factory.get(pid, FEATURE).data.map { prefs ->
@@ -113,6 +120,14 @@ class TraktSettingsDataStore @Inject constructor(
         }
     }.stateIn(scope, SharingStarted.Eagerly, DEFAULT_WATCH_PROGRESS_SOURCE)
 
+    suspend fun getWatchProgressSource(profileId: Int): WatchProgressSource =
+        WatchProgressSource.fromStorage(store(profileId).data.first()[watchProgressSourceKey])
+
+    suspend fun getLibrarySourceMode(profileId: Int): LibrarySourceMode {
+        val stored = store(profileId).data.first()[librarySourceModeKey]
+        return LibrarySourceMode.entries.firstOrNull { it.name == stored } ?: DEFAULT_LIBRARY_SOURCE_MODE
+    }
+
     suspend fun setContinueWatchingDaysCap(days: Int) {
         store().edit { prefs ->
             prefs[continueWatchingDaysCapKey] = normalizeContinueWatchingDaysCap(days)
@@ -144,11 +159,14 @@ class TraktSettingsDataStore @Inject constructor(
         }
     }
 
-    suspend fun removeDismissedNextUpKeysForContent(contentId: String) {
+    suspend fun removeDismissedNextUpKeysForContent(
+        contentId: String,
+        profileId: Int = profileManager.activeProfileId.value
+    ) {
         if (contentId.isBlank()) return
         val trimmed = contentId.trim()
         val prefix = "$trimmed|"
-        store().edit { prefs ->
+        store(profileId).edit { prefs ->
             val current = prefs[dismissedNextUpKeysKey] ?: emptySet()
             // Remove both legacy format ("contentId|season|episode") and new format ("contentId")
             val filtered = current.filterNot { it == trimmed || it.startsWith(prefix) }
@@ -170,8 +188,11 @@ class TraktSettingsDataStore @Inject constructor(
         }
     }
 
-    suspend fun setWatchProgressSource(source: WatchProgressSource) {
-        store().edit { prefs ->
+    suspend fun setWatchProgressSource(
+        source: WatchProgressSource,
+        profileId: Int = profileManager.activeProfileId.value
+    ) {
+        store(profileId).edit { prefs ->
             prefs[watchProgressSourceKey] = source.name
         }
     }
@@ -183,9 +204,36 @@ class TraktSettingsDataStore @Inject constructor(
         }
     }
 
-    suspend fun setLibrarySourceMode(mode: LibrarySourceMode) {
-        store().edit { prefs ->
+    suspend fun setLibrarySourceMode(
+        mode: LibrarySourceMode,
+        profileId: Int = profileManager.activeProfileId.value
+    ) {
+        store(profileId).edit { prefs ->
             prefs[librarySourceModeKey] = mode.name
+        }
+    }
+
+    suspend fun getRememberedWatchProgressSource(profileId: Int): WatchProgressSource? {
+        val stored = store(profileId).data.first()[rememberedWatchProgressSourceKey]
+        return WatchProgressSource.entries.firstOrNull { it.name == stored }
+    }
+
+    suspend fun setRememberedWatchProgressSource(source: WatchProgressSource?, profileId: Int) {
+        store(profileId).edit { prefs ->
+            if (source == null) prefs.remove(rememberedWatchProgressSourceKey)
+            else prefs[rememberedWatchProgressSourceKey] = source.name
+        }
+    }
+
+    suspend fun getRememberedLibrarySourceMode(profileId: Int): LibrarySourceMode? {
+        val stored = store(profileId).data.first()[rememberedLibrarySourceModeKey]
+        return LibrarySourceMode.entries.firstOrNull { it.name == stored }
+    }
+
+    suspend fun setRememberedLibrarySourceMode(mode: LibrarySourceMode?, profileId: Int) {
+        store(profileId).edit { prefs ->
+            if (mode == null) prefs.remove(rememberedLibrarySourceModeKey)
+            else prefs[rememberedLibrarySourceModeKey] = mode.name
         }
     }
 
@@ -212,6 +260,22 @@ class TraktSettingsDataStore @Inject constructor(
     suspend fun setSimklAnimeIdPreference(preference: SimklAnimeIdPreference) {
         store().edit { prefs ->
             prefs[simklAnimeIdPreferenceKey] = preference.name
+        }
+    }
+
+    val ratingSource: StateFlow<TrackingProviderId?> = profileManager.activeProfileId.flatMapLatest { pid ->
+        factory.get(pid, FEATURE).data.map { prefs ->
+            TrackingProviderId.fromStorage(prefs[ratingSourceKey])
+        }
+    }.stateIn(scope, SharingStarted.Eagerly, null)
+
+    suspend fun setRatingSource(source: TrackingProviderId?) {
+        store().edit { prefs ->
+            if (source == null) {
+                prefs.remove(ratingSourceKey)
+            } else {
+                prefs[ratingSourceKey] = source.storageId
+            }
         }
     }
 }

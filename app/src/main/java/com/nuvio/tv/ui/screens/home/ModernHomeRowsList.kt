@@ -1,5 +1,6 @@
 package com.nuvio.tv.ui.screens.home
 
+import com.nuvio.tv.domain.model.catalogRowLegacyKey
 import com.nuvio.tv.ui.theme.NuvioTheme
 
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -18,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -33,7 +35,6 @@ import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.foundation.focusGroup
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -48,7 +49,6 @@ import androidx.compose.ui.unit.dp
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.compose.ui.ExperimentalComposeUiApi
 import coil3.imageLoader
-import coil3.memory.MemoryCache
 import coil3.request.ImageRequest
 import com.nuvio.tv.domain.model.ContinueWatchingCardStyle
 import com.nuvio.tv.domain.model.FocusedPosterTrailerPlaybackTarget
@@ -88,7 +88,6 @@ internal fun ModernHomeRowsList(
     contentFocusRequester: FocusRequester,
     rowsViewportHeight: Dp,
     catalogBottomPadding: Dp,
-    trailerContentAlpha: () -> Float,
     verticalRowBringIntoViewSpec: BringIntoViewSpec,
     onRowItemFocusedInternal: (String, Int, Boolean) -> Unit,
     onNavigateToDetail: (String, String, String) -> Unit,
@@ -107,6 +106,7 @@ internal fun ModernHomeRowsList(
     trailerPreviewUrls: StableMap<String, String>,
     trailerPreviewAudioUrls: StableMap<String, String>,
     useLandscapePosters: Boolean,
+    alwaysShowLandscapeClearlogo: Boolean = false,
     showLabels: Boolean,
     posterCardCornerRadius: Dp,
     focusedPosterBackdropTrailerMuted: Boolean,
@@ -167,7 +167,7 @@ internal fun ModernHomeRowsList(
         verticalRowListState,
         density,
         useLandscapePosters,
-        effectiveExpandEnabled,
+        alwaysShowLandscapeClearlogo,
         portraitCatalogCardWidth,
         portraitCatalogCardHeight,
         landscapeCatalogCardWidth,
@@ -193,14 +193,15 @@ internal fun ModernHomeRowsList(
                                 portraitCardWidth = portraitCatalogCardWidth,
                                 portraitCardHeight = portraitCatalogCardHeight,
                                 landscapeCardWidth = landscapeCatalogCardWidth,
-                                landscapeCardHeight = landscapeCatalogCardHeight,
-                                expandEnabled = effectiveExpandEnabled
+                                landscapeCardHeight = landscapeCatalogCardHeight
                             )
                             val wPx = with(density) { metrics.width.roundToPx() }
                             val hPx = with(density) { metrics.height.roundToPx() }
                             if (wPx <= 0 || hPx <= 0) continue
-                            val cacheKey = "${url}_${wPx}x${hPx}"
-                            if (verticalPrefetchImageLoader.memoryCache?.get(MemoryCache.Key(cacheKey)) != null) continue
+                            val landscapeCustomPoster = useLandscapePosters && !alwaysShowLandscapeClearlogo &&
+                                !item.metaPreview?.landscapePoster.isNullOrBlank()
+                            val cacheKey = cardImageMemoryCacheKey(url, wPx, hPx, item.cardImageFallbackUrl(landscapeCustomPoster))
+                            if (verticalPrefetchImageLoader.memoryCache?.get(cacheKey) != null) continue
                             verticalPrefetchImageLoader.enqueue(
                                 ImageRequest.Builder(context)
                                     .data(url)
@@ -232,7 +233,11 @@ internal fun ModernHomeRowsList(
             for (idx in firstVisible.coerceAtLeast(0)..(lastVisible + prefetchAheadForLazy)) {
                 val row = rows.list.getOrNull(idx) ?: continue
                 if (row.isLoading && row.items.list.firstOrNull()?.imageUrl.isPlaceholder()) {
-                    val legacyKey = "${row.addonId}_${row.apiType}_${row.catalogId}"
+                    val legacyKey = catalogRowLegacyKey(
+                        row.addonId ?: continue,
+                        row.apiType ?: continue,
+                        row.catalogId ?: continue
+                    )
                     latestOnRequestLazyCatalogLoad.value(legacyKey)
                 }
             }
@@ -247,7 +252,26 @@ internal fun ModernHomeRowsList(
 
     val defaultBringIntoViewSpec = LocalBringIntoViewSpec.current
 
-    val sharedPlaceholderShimmerOffsetState = rememberPlaceholderShimmerOffsetState(label = "sharedRowShimmer")
+    // Only run the shared shimmer while a row on screen actually draws it: rememberInfiniteTransition
+    // keeps waking the Compose frame clock on every frame for as long as it is composed, even when
+    // nothing reads its value. Rows below the fold stay placeholders until they are scrolled to, so
+    // the check has to be on the visible rows, not on the whole list. Keyed on the list state for
+    // the same reason isVerticalRowsScrollingState is in ModernHomeContent: rememberLazyListState
+    // is saveable-backed and can hand back a new instance, and a derived state still holding the
+    // old one would read a layout that has stopped updating.
+    val needsPlaceholderShimmer by remember(verticalRowListState) {
+        derivedStateOf {
+            val rows = latestCarouselRowsForLazy.value.list
+            verticalRowListState.layoutInfo.visibleItemsInfo.any { visibleRow ->
+                rows.getOrNull(visibleRow.index)?.showsPlaceholderShimmer() == true
+            }
+        }
+    }
+    val sharedPlaceholderShimmerOffsetState = if (needsPlaceholderShimmer) {
+        rememberPlaceholderShimmerOffsetState(label = "sharedRowShimmer")
+    } else {
+        null
+    }
 
     CompositionLocalProvider(
         LocalBringIntoViewSpec provides verticalRowBringIntoViewSpec,
@@ -262,7 +286,6 @@ internal fun ModernHomeRowsList(
                 .height(rowsViewportHeight)
                 .padding(bottom = catalogBottomPadding)
                 .clipToBounds()
-                .graphicsLayer { alpha = trailerContentAlpha() }
                 .focusRequester(contentFocusRequester)
                 .focusRestorer { focusRestorerRequester() }
                 .onPreviewKeyEvent { event ->
@@ -404,6 +427,7 @@ internal fun ModernHomeRowsList(
                     rowTitleBottom = 14.dp, // rowTitleBottom
                     defaultBringIntoViewSpec = defaultBringIntoViewSpec,
                     focusStateCatalogRowScrollIndex = focusState.catalogRowScrollStates[row.key] ?: 0,
+                    focusStateCatalogRowScrollAnchor = focusState.catalogRowScrollAnchors[row.key],
                     focusedItemByRow = focusedItemByRow,
                     rowListStates = rowListStates,
                     loadMoreRequestedTotals = loadMoreRequestedTotals,
@@ -413,6 +437,7 @@ internal fun ModernHomeRowsList(
                     onPendingRowFocusCleared = onPendingRowFocusCleared,
                     onRowItemFocused = stableOnRowItemFocused,
                     useLandscapePosters = useLandscapePosters,
+                    alwaysShowLandscapeClearlogo = alwaysShowLandscapeClearlogo,
                     showLabels = showLabels,
                     posterCardCornerRadius = posterCardCornerRadius,
                     focusedPosterBackdropTrailerMuted = focusedPosterBackdropTrailerMuted,

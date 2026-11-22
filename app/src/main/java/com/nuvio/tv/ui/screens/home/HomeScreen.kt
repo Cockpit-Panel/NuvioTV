@@ -10,15 +10,11 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Divider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.lifecycle.Lifecycle
@@ -36,7 +32,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -47,16 +42,20 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.nuvio.tv.domain.model.HomeLayout
 import com.nuvio.tv.domain.model.LibraryListTab
-import com.nuvio.tv.domain.model.localizedTitle
 import com.nuvio.tv.domain.model.LibrarySourceMode
 import com.nuvio.tv.domain.model.MetaPreview
+import com.nuvio.tv.domain.model.isSeriesLikeType
 import com.nuvio.tv.ui.components.ErrorState
 import com.nuvio.tv.ui.components.LoadingIndicator
+import com.nuvio.tv.ui.components.LocalStartupLoadingState
+import com.nuvio.tv.ui.components.LocalStartupSplashEnabled
+import com.nuvio.tv.ui.components.shouldShowHomeStartupLoader
 import com.nuvio.tv.ui.components.NuvioDialog
 import com.nuvio.tv.ui.components.PosterCardDefaults
 import com.nuvio.tv.ui.components.PosterCardStyle
 import androidx.compose.ui.res.stringResource
 import com.nuvio.tv.R
+import com.nuvio.tv.ui.components.posteroptions.PosterListPickerDialog
 import com.nuvio.tv.core.tracking.LOCAL_LIBRARY_LIST_KEY
 import com.nuvio.tv.core.tracking.supportsMembershipFor
 import com.nuvio.tv.data.local.StartupAuthNotice
@@ -102,7 +101,9 @@ fun HomeScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.beginShuffleHomeVisit()
                 viewModel.refreshHomeCatalogsIfStale()
+                viewModel.refreshContinueWatchingIfReleased()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -155,8 +156,25 @@ fun HomeScreen(
         }
     }
 
-    val onNavigateToDetailStable = remember(onNavigateToDetail) { onNavigateToDetail }
-    val onContinueWatchingClickStable = remember(onContinueWatchingClick) { onContinueWatchingClick }
+    val onNavigateToDetailStable = remember(onNavigateToDetail, viewModel) {
+        { itemId: String, itemType: String, addonBaseUrl: String ->
+            viewModel.beginTrailerHandoff(itemId)
+            onNavigateToDetail(itemId, itemType, addonBaseUrl)
+        }
+    }
+    val latestContinueWatchingClickAction = androidx.compose.runtime.rememberUpdatedState(uiState.continueWatchingClickAction)
+    val onContinueWatchingClickStable = remember(onContinueWatchingClick, onNavigateToDetail) {
+        { item: ContinueWatchingItem ->
+            if (latestContinueWatchingClickAction.value.opensDetails(item)) {
+                when (item) {
+                    is ContinueWatchingItem.InProgress -> onNavigateToDetail(item.progress.contentId, item.progress.contentType, "")
+                    is ContinueWatchingItem.NextUp -> onNavigateToDetail(item.info.contentId, item.info.contentType, "")
+                }
+            } else {
+                onContinueWatchingClick(item)
+            }
+        }
+    }
     val onContinueWatchingStartFromBeginningStable = remember(onContinueWatchingStartFromBeginning) { onContinueWatchingStartFromBeginning }
     val onContinueWatchingPlayManuallyStable = remember(onContinueWatchingPlayManually) { onContinueWatchingPlayManually }
     val onNavigateToCatalogSeeAllStable = remember(onNavigateToCatalogSeeAll) { onNavigateToCatalogSeeAll }
@@ -220,7 +238,7 @@ fun HomeScreen(
         )
     }
 
-    val noAddonsError = stringResource(R.string.home_error_no_addons)
+    val noAddonsError = stringResource(R.string.home_empty_no_sources_title)
     val noCatalogAddonsError = stringResource(R.string.home_error_no_catalog_addons)
     val hasAnyContent = uiState.catalogRows.isNotEmpty() ||
         (uiState.continueWatchingEnabled && uiState.continueWatchingItems.isNotEmpty()) ||
@@ -238,6 +256,18 @@ fun HomeScreen(
 
     // Reports the home screen as fully drawn once it leaves the loading state so startup timing is measurable and post-launch work can be deferred.
     ReportDrawnWhen { !showStartupLoader }
+
+    val startupLoadingState = LocalStartupLoadingState.current
+    val showHomeLoader = shouldShowHomeStartupLoader(
+        loading = showStartupLoader,
+        sharedSplashEnabled = LocalStartupSplashEnabled.current,
+        startupComplete = startupLoadingState?.complete != false
+    )
+    LaunchedEffect(showStartupLoader, startupLoadingState) {
+        if (!showStartupLoader) {
+            startupLoadingState?.complete = true
+        }
+    }
 
     Box(
         modifier = Modifier.fillMaxSize()
@@ -397,7 +427,7 @@ fun HomeScreen(
             }
         }
 
-        if (showStartupLoader) {
+        if (showHomeLoader) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -434,17 +464,12 @@ fun HomeScreen(
     if (selectedPoster != null) {
         val item = selectedPoster.item
         val statusKey = homeItemStatusKey(item.id, item.apiType)
-        val isMovie = item.apiType.equals("movie", ignoreCase = true)
-        val isSeries = item.apiType.equals("series", ignoreCase = true) ||
-            item.apiType.equals("tv", ignoreCase = true) ||
-            item.apiType.equals("anime", ignoreCase = true)
+        val isSeries = isSeriesLikeType(item.apiType)
         HomePosterOptionsDialog(
             title = item.name,
             isInLibrary = uiState.posterLibraryMembership[statusKey] == true,
             isLibraryPending = statusKey in uiState.posterLibraryPending,
             showManageLists = uiState.librarySourceMode != LibrarySourceMode.LOCAL,
-            isMovie = isMovie,
-            isSeries = isSeries,
             isWatched = movieWatchedStatus[statusKey] == true,
             isWatchedPending = statusKey in uiState.movieWatchedPending,
             onDismiss = { posterOptionsTarget = null },
@@ -461,10 +486,10 @@ fun HomeScreen(
                 posterOptionsTarget = null
             },
             onToggleWatched = {
-                if (isMovie) {
-                    viewModel.togglePosterMovieWatched(item)
-                } else {
+                if (isSeries) {
                     viewModel.togglePosterSeriesWatched(item)
+                } else {
+                    viewModel.togglePosterMovieWatched(item)
                 }
                 posterOptionsTarget = null
             }
@@ -481,7 +506,7 @@ fun HomeScreen(
         val destinationTabs = uiState.libraryListTabs.filter { tab ->
             tab.supportsMembershipFor(contentType)
         }
-        HomeLibraryListPickerDialog(
+        PosterListPickerDialog(
             title = uiState.posterListPickerTitle ?: stringResource(R.string.detail_lists_fallback),
             tabs = listOf(localTab) + destinationTabs,
             membership = uiState.posterListPickerMembership,
@@ -535,6 +560,9 @@ private fun ClassicHomeRoute(
         showContinueWatchingManualPlayOption = showContinueWatchingManualPlayOption,
         onNavigateToCatalogSeeAll = onNavigateToCatalogSeeAll,
         onNavigateToFolderDetail = onNavigateToFolderDetail,
+        onMarkContinueWatchingWatched = remember(viewModel) {
+            { item -> viewModel.onEvent(HomeEvent.OnMarkContinueWatchingWatched(item)) }
+        },
         onRemoveContinueWatching = { contentId, season, episode, isNextUp ->
             viewModel.onEvent(HomeEvent.OnRemoveContinueWatching(contentId, season, episode, isNextUp))
         },
@@ -546,8 +574,8 @@ private fun ClassicHomeRoute(
         onItemFocus = { item ->
             viewModel.onItemFocus(item)
         },
-        onSaveFocusState = { vi, vo, rk, ikm, m, ri, ii ->
-            viewModel.saveFocusState(vi, vo, rk, ikm, m, ri, ii)
+        onSaveFocusState = { vi, vo, rk, ikm, m, ma, ri, ii ->
+            viewModel.saveFocusState(vi, vo, rk, ikm, m, ma, ri, ii)
             // Authoritative: this is the row that actually held focus when Home went away.
             viewModel.setLiveFocusedRowKey(rk)
         },
@@ -592,6 +620,9 @@ private fun GridHomeRoute(
         showContinueWatchingManualPlayOption = showContinueWatchingManualPlayOption,
         onNavigateToCatalogSeeAll = onNavigateToCatalogSeeAll,
         onNavigateToFolderDetail = onNavigateToFolderDetail,
+        onMarkContinueWatchingWatched = remember(viewModel) {
+            { item -> viewModel.onEvent(HomeEvent.OnMarkContinueWatchingWatched(item)) }
+        },
         onRemoveContinueWatching = remember(viewModel) {
             { contentId, season, episode, isNextUp ->
                 viewModel.onEvent(HomeEvent.OnRemoveContinueWatching(contentId, season, episode, isNextUp))
@@ -628,10 +659,11 @@ private fun ModernHomeRoute(
     val focusState by viewModel.focusState.collectAsStateWithLifecycle()
     val scrollToTopTrigger by viewModel.scrollToTopTrigger.collectAsStateWithLifecycle()
     val modernPresentation by viewModel.modernHomePresentation.collectAsStateWithLifecycle()
-    val enrichingItemId by viewModel.enrichingItemId.collectAsStateWithLifecycle()
-    val lastEnrichedPreview by viewModel.lastEnrichedPreview.collectAsStateWithLifecycle()
-    val enrichedPreviews by viewModel.enrichedPreviews.collectAsStateWithLifecycle()
-    val failedEnrichmentIds by viewModel.failedEnrichmentIds.collectAsStateWithLifecycle()
+    // Passed down as State, not values: enrichment changes on most focus moves, and reading it
+    // here recomposed all of the home content for each one.
+    val enrichingItemId = viewModel.enrichingItemId.collectAsStateWithLifecycle()
+    val enrichedPreviews = viewModel.enrichedPreviews.collectAsStateWithLifecycle()
+    val failedEnrichmentIds = viewModel.failedEnrichmentIds.collectAsStateWithLifecycle()
     val requestTrailerPreview = remember(viewModel) {
         { itemId: String, title: String, releaseInfo: String?, apiType: String ->
             viewModel.requestTrailerPreview(itemId, title, releaseInfo, apiType)
@@ -648,8 +680,8 @@ private fun ModernHomeRoute(
         }
     }
     val saveModernFocusState = remember(viewModel) {
-        { vi: Int, vo: Int, rk: String?, ikm: Map<String, String>, m: Map<String, Int>, ri: Int, ii: Int ->
-            viewModel.saveFocusState(vi, vo, rk, ikm, m, ri, ii)
+        { vi: Int, vo: Int, rk: String?, ikm: Map<String, String>, m: Map<String, Int>, ma: Map<String, String>, ri: Int, ii: Int ->
+            viewModel.saveFocusState(vi, vo, rk, ikm, m, ma, ri, ii)
             // Authoritative: this is the row that actually held focus when Home went away.
             viewModel.setLiveFocusedRowKey(rk)
         }
@@ -665,7 +697,6 @@ private fun ModernHomeRoute(
         focusState = focusState,
         scrollToTopTrigger = scrollToTopTrigger,
         enrichingItemId = enrichingItemId,
-        lastEnrichedPreview = lastEnrichedPreview,
         enrichedPreviews = enrichedPreviews,
         failedEnrichmentIds = failedEnrichmentIds,
         trailerPreviewUrls = viewModel.trailerPreviewUrls,
@@ -677,6 +708,9 @@ private fun ModernHomeRoute(
         showContinueWatchingManualPlayOption = showContinueWatchingManualPlayOption,
         onRequestTrailerPreview = requestTrailerPreview,
         onLoadMoreCatalog = loadMoreCatalog,
+        onMarkContinueWatchingWatched = remember(viewModel) {
+            { item -> viewModel.onEvent(HomeEvent.OnMarkContinueWatchingWatched(item)) }
+        },
         onRemoveContinueWatching = removeContinueWatching,
         isCatalogItemWatched = isCatalogItemWatched,
         onCatalogItemLongPress = onCatalogItemLongPress,
@@ -702,8 +736,6 @@ private fun HomePosterOptionsDialog(
     isInLibrary: Boolean,
     isLibraryPending: Boolean,
     showManageLists: Boolean,
-    isMovie: Boolean,
-    isSeries: Boolean = false,
     isWatched: Boolean,
     isWatchedPending: Boolean,
     onDismiss: () -> Unit,
@@ -757,106 +789,23 @@ private fun HomePosterOptionsDialog(
             )
         }
 
-        if (isMovie || isSeries) {
-            Button(
-                onClick = onToggleWatched,
-                enabled = !isWatchedPending,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.colors(
-                    containerColor = NuvioTheme.colors.BackgroundCard,
-                    contentColor = NuvioTheme.colors.TextPrimary
-                )
-            ) {
-                Text(
-                    if (isWatched) {
-                        stringResource(R.string.hero_mark_unwatched)
-                    } else {
-                        stringResource(R.string.hero_mark_watched)
-                    }
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalTvMaterial3Api::class)
-@Composable
-private fun HomeLibraryListPickerDialog(
-    title: String,
-    tabs: List<LibraryListTab>,
-    membership: Map<String, Boolean>,
-    isPending: Boolean,
-    error: String?,
-    onToggle: (String) -> Unit,
-    onSave: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    val primaryFocusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(Unit) {
-        primaryFocusRequester.requestFocus()
-    }
-
-    NuvioDialog(
-        onDismiss = onDismiss,
-        title = title,
-        subtitle = stringResource(R.string.detail_lists_subtitle),
-        width = 500.dp
-    ) {
-        if (!error.isNullOrBlank()) {
+        Button(
+            onClick = onToggleWatched,
+            enabled = !isWatchedPending,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.colors(
+                containerColor = NuvioTheme.colors.BackgroundCard,
+                contentColor = NuvioTheme.colors.TextPrimary
+            )
+        ) {
             Text(
-                text = error,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFFFFB6B6)
+                if (isWatched) {
+                    stringResource(R.string.hero_mark_unwatched)
+                } else {
+                    stringResource(R.string.hero_mark_watched)
+                }
             )
         }
-
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 300.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(tabs, key = { it.key }) { tab ->
-                val selected = membership[tab.key] == true
-                val titleText = if (selected) "\u2713 ${tab.localizedTitle()}" else tab.localizedTitle()
-                Button(
-                    onClick = { onToggle(tab.key) },
-                    enabled = !isPending,
-                    modifier = if (tab.key == tabs.firstOrNull()?.key) {
-                        Modifier
-                            .fillMaxWidth()
-                            .focusRequester(primaryFocusRequester)
-                    } else {
-                        Modifier.fillMaxWidth()
-                    },
-                    colors = ButtonDefaults.colors(
-                        containerColor = if (selected) NuvioTheme.colors.FocusBackground else NuvioTheme.colors.BackgroundCard,
-                        contentColor = NuvioTheme.colors.TextPrimary
-                    )
-                ) {
-                    Text(
-                        text = titleText,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-        }
-
-        Divider(color = NuvioTheme.colors.Border, thickness = NuvioTheme.spacing.hairline)
-
-        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
-            Button(
-                onClick = onSave,
-                enabled = !isPending,
-                colors = ButtonDefaults.colors(
-                    containerColor = NuvioTheme.colors.BackgroundCard,
-                    contentColor = NuvioTheme.colors.TextPrimary
-                )
-            ) {
-                Text(if (isPending) stringResource(R.string.action_saving) else stringResource(R.string.action_save))
-            }
-        }
     }
 }
+

@@ -1,5 +1,7 @@
 package com.nuvio.tv.ui.components
 
+import androidx.compose.ui.semantics.clearAndSetSemantics
+
 import com.nuvio.tv.ui.theme.NuvioTheme
 
 import androidx.compose.foundation.BorderStroke
@@ -37,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -53,6 +56,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextDirection
 import com.nuvio.tv.R
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Border
@@ -63,13 +67,17 @@ import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.nuvio.tv.domain.model.CatalogRow
+import com.nuvio.tv.domain.model.stableKey
+import com.nuvio.tv.domain.model.stableItemKeys
 import com.nuvio.tv.domain.model.CardDepthSurface
 import com.nuvio.tv.domain.model.MetaPreview
 import com.nuvio.tv.domain.model.stableItemKey
 import com.nuvio.tv.domain.model.stableItemKeys
 import com.nuvio.tv.domain.model.PLACEHOLDER_IMAGE_URL
+import com.nuvio.tv.domain.model.PosterShape
 import com.nuvio.tv.ui.util.formatAddonTypeLabel
 import com.nuvio.tv.ui.util.localizedContentType
+import com.nuvio.tv.ui.util.contentTextDirection
 import androidx.compose.ui.platform.LocalContext
 
 @OptIn(ExperimentalTvMaterial3Api::class, ExperimentalComposeUiApi::class, ExperimentalFoundationApi::class)
@@ -103,6 +111,9 @@ fun CatalogRowSection(
     /** Persisted focus index from parent — used only by focusRestorer to
      *  survive LazyColumn recycling.  Does NOT trigger a focus request. */
     restorerFocusedIndex: Int = -1,
+    /** Clears the remembered focus index when this changes, including when the new content has
+     *  the same items. */
+    focusResetToken: String? = null,
     onItemFocused: (itemIndex: Int) -> Unit = {},
     rowFocusRequester: FocusRequester? = null,
     /** FocusRequester that will be attached to the first-or-last-focused card.
@@ -111,9 +122,35 @@ fun CatalogRowSection(
     upFocusRequester: FocusRequester? = null,
     listState: LazyListState = rememberLazyListState(initialFirstVisibleItemIndex = initialScrollIndex)
 ) {
-    val rowItemKeys = remember(catalogRow.items) { catalogRow.stableItemKeys() }
+    val catalogRowKey = remember(catalogRow) { catalogRow.stableKey() }
+    val rowItemIdentities = remember(catalogRow.items) { catalogRow.stableItemKeys() }
+
+    // Item keys carry item identity, which the placeholder the ring sits on loses when real data
+    // arrives: its key changes and Compose tears the focused node down. Lend that one card a
+    // positional key for as long as the ring can be on it, so the node is reused instead.
+    //
+    // Armed from the item id, not a loading flag: a lazily loaded catalog composes its row
+    // before loading starts and would never see the flag go up.
+    val firstCardKey = remember(catalogRowKey) { catalogRowKey + "__first" }
+    val firstIsPlaceholder = catalogRow.items.firstOrNull()?.id?.startsWith("__placeholder_") == true
+    val pinFirstCard = remember(catalogRowKey) { mutableStateOf(firstIsPlaceholder) }
+    val pinSpent = remember(catalogRowKey) { mutableStateOf(false) }
+    // Lent to the card, not the slot: slot 0 would hand the key to whatever lands there.
+    val pinnedItemKey = remember(catalogRowKey) { mutableStateOf<String?>(null) }
+    if (firstIsPlaceholder && !pinSpent.value) pinFirstCard.value = true
+    if (pinFirstCard.value && !firstIsPlaceholder && pinnedItemKey.value == null) {
+        pinnedItemKey.value = rowItemIdentities.firstOrNull()
+    }
+
     fun rowItemFocusKey(index: Int, item: MetaPreview): String {
-        return rowItemKeys.getOrElse(index) { catalogRow.stableItemKey(item) }
+        val identity = rowItemIdentities.getOrElse(index) { catalogRow.stableItemKey(item) }
+        if (!pinFirstCard.value) return identity
+        val pinned = pinnedItemKey.value
+        return when {
+            pinned != null -> if (identity == pinned) firstCardKey else identity
+            index == 0 -> firstCardKey
+            else -> identity
+        }
     }
 
     val seeAllCardShape = RoundedCornerShape(posterCardStyle.cornerRadius)
@@ -125,18 +162,24 @@ fun CatalogRowSection(
     // Item keys as they were when lastFocusedItemIndex was recorded, so the index can be
     // relocated when the row changes instead of pointing at whatever took that slot.
     val previousRowItemKeys = remember { mutableStateOf<List<String>>(emptyList()) }
+    // Update during composition so focusRestorer sees the reset immediately.
+    val lastFocusResetToken = remember { mutableStateOf(focusResetToken) }
+    if (lastFocusResetToken.value != focusResetToken) {
+        lastFocusResetToken.value = focusResetToken
+        lastFocusedItemIndex.intValue = -1
+    }
     // Runs during composition, not in an effect: focusRestorer below is driven by the user and
     // can fire before an effect would have relocated the index, which would restore focus onto
     // whatever took that slot.
-    if (previousRowItemKeys.value !== rowItemKeys) {
+    if (previousRowItemKeys.value !== rowItemIdentities) {
         val storedIndex = lastFocusedItemIndex.intValue
         val previousKeys = previousRowItemKeys.value
         if (storedIndex >= 0 && previousKeys.isNotEmpty()) {
             val wanted = previousKeys.getOrNull(storedIndex)
-            val relocated = wanted?.let { rowItemKeys.indexOf(it) } ?: -1
+            val relocated = wanted?.let { rowItemIdentities.indexOf(it) } ?: -1
             if (relocated != storedIndex) lastFocusedItemIndex.intValue = relocated
         }
-        previousRowItemKeys.value = rowItemKeys
+        previousRowItemKeys.value = rowItemIdentities
     }
 
     val blockingFocusExit = remember { mutableStateOf(false) }
@@ -149,6 +192,13 @@ fun CatalogRowSection(
         blockingFocusExit.value = true
     }
     wasPlaceholderRef.value = firstItemId?.startsWith("__placeholder_") == true
+
+    // Released once the ring has left the row: swapping the node earlier is visible for nothing.
+    if (pinFirstCard.value && !firstIsPlaceholder && !rowHasFocusRef.value) {
+        pinFirstCard.value = false
+        pinnedItemKey.value = null
+        pinSpent.value = true
+    }
 
     LaunchedEffect(blockingFocusExit.value) {
         if (!blockingFocusExit.value) return@LaunchedEffect
@@ -246,15 +296,20 @@ fun CatalogRowSection(
             Column(verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)) {
                 Text(
                     text = catalogTitle.ifBlank { " " },
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        textDirection = catalogTitle.contentTextDirection()
+                    ),
                     color = if (catalogTitle.isBlank()) Color.Transparent else NuvioTheme.colors.TextPrimary,
                     maxLines = 3,
                     overflow = TextOverflow.Clip
                 )
                 if (showAddonName) {
+                    val addonText = if (catalogTitle.isBlank()) " " else stringResource(R.string.catalog_from_addon, catalogRow.addonName)
                     Text(
-                        text = if (catalogTitle.isBlank()) " " else stringResource(R.string.catalog_from_addon, catalogRow.addonName),
-                        style = MaterialTheme.typography.labelMedium,
+                        text = addonText,
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            textDirection = addonText.contentTextDirection()
+                        ),
                         color = if (catalogTitle.isBlank()) Color.Transparent else NuvioTheme.colors.TextTertiary
                     )
                 }
@@ -405,12 +460,16 @@ fun CatalogRowSection(
             if (!showSeeAll && catalogRow.isLoading) {
                 item(key = "${catalogRow.type}_${catalogRow.catalogId}_loading") {
                     val cardDepthStyle = LocalCardDepthStyle.current
+                    val globalLandscape = LocalLandscapePosterMode.current
+                    val loadingCardWidth = if (globalLandscape) posterCardStyle.height else posterCardStyle.width
+                    val loadingCardHeight = if (globalLandscape) posterCardStyle.height / PosterShape.LANDSCAPE.aspectRatio() else posterCardStyle.height
                     Card(
                         onClick = {},
                         modifier = Modifier
-                            .width(posterCardStyle.width)
-                            .height(posterCardStyle.height)
-                            .focusProperties { canFocus = false },
+                            .width(loadingCardWidth)
+                            .height(loadingCardHeight)
+                              .clearAndSetSemantics {}
+                              .focusProperties { canFocus = false },
                         shape = CardDefaults.shape(shape = seeAllCardShape),
                         colors = CardDefaults.colors(
                             containerColor = NuvioTheme.colors.BackgroundCard,
@@ -436,11 +495,14 @@ fun CatalogRowSection(
             if (showSeeAll) {
                 item(key = "${catalogRow.type}_${catalogRow.catalogId}_see_all") {
                     val cardDepthStyle = LocalCardDepthStyle.current
+                    val globalLandscape = LocalLandscapePosterMode.current
+                    val seeAllCardWidth = if (globalLandscape) posterCardStyle.height else posterCardStyle.width
+                    val seeAllCardHeight = if (globalLandscape) posterCardStyle.height / PosterShape.LANDSCAPE.aspectRatio() else posterCardStyle.height
                     Card(
                         onClick = onSeeAll,
                         modifier = Modifier
-                            .width(posterCardStyle.width)
-                            .height(posterCardStyle.height)
+                            .width(seeAllCardWidth)
+                            .height(seeAllCardHeight)
                             .then(directionalFocusModifier),
                         shape = CardDefaults.shape(shape = seeAllCardShape),
                         colors = CardDefaults.colors(
@@ -472,7 +534,7 @@ fun CatalogRowSection(
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                    contentDescription = seeAllLabel ?: stringResource(R.string.action_see_all),
+                                    contentDescription = null,
                                     modifier = Modifier.size(NuvioTheme.spacing.xxl),
                                     tint = NuvioTheme.colors.TextSecondary
                                 )

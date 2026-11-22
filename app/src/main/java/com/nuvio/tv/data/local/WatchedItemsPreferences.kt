@@ -4,16 +4,23 @@ import android.util.Log
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.nuvio.tv.core.profile.ProfileManager
 import com.google.gson.Gson
+import com.nuvio.tv.data.mediaserver.ServerItemRef
 import com.nuvio.tv.domain.model.WatchedItem
+import com.nuvio.tv.domain.model.WatchedMutationKey
+import com.nuvio.tv.domain.model.mutationKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,14 +43,51 @@ class WatchedItemsPreferences @Inject constructor(
     private val deltaCursorKey = longPreferencesKey("watched_items_delta_cursor")
     private val deltaInitializedKey = booleanPreferencesKey("watched_items_delta_initialized")
 
+    // Content ids of single items (no season or episode) marked watched while a tracking provider
+    // was the watch progress source, which that provider has not reported yet. Its data alone
+    // decides what shows as watched, and it may never know an item, such as an add-on's YouTube
+    // video, so these marks are read alongside it until it reports them or they are unmarked.
+    private val pendingProviderMarksKey = stringSetPreferencesKey("pending_provider_watched_marks")
+
+    // Decoded items per profile, keyed by their stored JSON. Every collector of observeAllItems
+    // decodes the full set on each change; reusing unchanged entries keeps a single write (such as
+    // marking an episode watched during playback) from re-parsing the whole history in every
+    // collector at once. Values depend only on the key, so a lost update only costs cache hits.
+    // Entries that fail to parse are cached as null so they are only parsed once.
+    private val decodeCaches = ConcurrentHashMap<Int, AtomicReference<Map<String, WatchedItem?>>>()
+
+    private fun decodeItems(profileId: Int, raw: Set<String>): List<WatchedItem> {
+        val cache = decodeCaches.getOrPut(profileId) { AtomicReference(emptyMap()) }
+        val previous = cache.get()
+        val decoded = HashMap<String, WatchedItem?>(raw.size * 2)
+        val items = ArrayList<WatchedItem>(raw.size)
+        raw.forEach { json ->
+            val item = if (previous.containsKey(json)) {
+                previous[json]
+            } else {
+                runCatching { gson.fromJson(json, WatchedItem::class.java) }.getOrNull()
+            }
+            decoded[json] = item
+            if (item != null) items += item
+        }
+        cache.set(decoded)
+        return items
+    }
+
     suspend fun getLastSuccessfulPushMs(profileId: Int = profileManager.activeProfileId.value): Long {
         val prefs = store(profileId).data.first()
         return prefs[lastSuccessfulPushMsKey] ?: 0L
     }
 
-    suspend fun setLastSuccessfulPushMs(timestampMs: Long, profileId: Int = profileManager.activeProfileId.value) {
+    /**
+     * Advances the stored push point, never lowering it. The comparison happens inside
+     * the edit, so two pushes finishing out of order cannot leave the older one on disk.
+     * Nothing needs to lower it: deleting a profile removes the whole store.
+     */
+    suspend fun advanceLastSuccessfulPushMs(timestampMs: Long, profileId: Int = profileManager.activeProfileId.value) {
         store(profileId).edit { prefs ->
-            prefs[lastSuccessfulPushMsKey] = timestampMs
+            val stored = prefs[lastSuccessfulPushMsKey] ?: 0L
+            prefs[lastSuccessfulPushMsKey] = maxOf(stored, timestampMs)
         }
     }
 
@@ -66,12 +110,39 @@ class WatchedItemsPreferences @Inject constructor(
     }
 
     internal val allItems: Flow<List<WatchedItem>> = profileManager.activeProfileId.flatMapLatest { pid ->
-        factory.get(pid, FEATURE).data.map { preferences ->
-            val raw = preferences[watchedItemsKey] ?: emptySet()
-            raw.mapNotNull { json ->
-                runCatching { gson.fromJson(json, WatchedItem::class.java) }.getOrNull()
-            }
-        }.flowOn(Dispatchers.Default)
+        observeAllItems(pid)
+    }
+
+    fun observeAllItems(profileId: Int): Flow<List<WatchedItem>> {
+        return store(profileId).data
+            .map { preferences -> preferences[watchedItemsKey] ?: emptySet() }
+            // The store also holds push and delta bookkeeping; skip those writes.
+            .distinctUntilChanged()
+            .map { raw -> decodeItems(profileId, raw) }
+            .flowOn(Dispatchers.Default)
+    }
+
+    /** The active profile's pending provider marks; see [observePendingProviderMarks]. */
+    internal val pendingProviderMarks: Flow<Set<String>> = profileManager.activeProfileId.flatMapLatest { pid ->
+        observePendingProviderMarks(pid)
+    }
+
+    /**
+     * Content ids of single items marked watched while a tracking provider was the source and not
+     * reported by it yet, that are still marked here.
+     */
+    fun observePendingProviderMarks(profileId: Int): Flow<Set<String>> {
+        return store(profileId).data
+            .map { preferences -> pendingMarksStillWatched(preferences) }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+    }
+
+    private fun pendingMarksStillWatched(preferences: Preferences): Set<String> {
+        val pending = preferences[pendingProviderMarksKey].orEmpty()
+        if (pending.isEmpty()) return emptySet()
+        val storedKeys = preferences[watchedItemsKey].orEmpty().mapTo(HashSet(), ::extractWatchedItemKey)
+        return pending.filterTo(linkedSetOf()) { contentId -> buildWatchedKey(contentId, null, null) in storedKeys }
     }
 
     fun isWatched(contentId: String, season: Int? = null, episode: Int? = null): Flow<Boolean> {
@@ -84,8 +155,11 @@ class WatchedItemsPreferences @Inject constructor(
         }
     }
 
-    fun getWatchedEpisodesForContent(contentId: String): Flow<Set<Pair<Int, Int>>> {
-        return allItems.map { items ->
+    fun getWatchedEpisodesForContent(
+        contentId: String,
+        profileId: Int = profileManager.activeProfileId.value
+    ): Flow<Set<Pair<Int, Int>>> {
+        return observeAllItems(profileId).map { items ->
             items.filter { it.contentId == contentId && it.season != null && it.episode != null }
                 .map { it.season!! to it.episode!! }
                 .toSet()
@@ -99,9 +173,14 @@ class WatchedItemsPreferences @Inject constructor(
         }
     }
 
+    /**
+     * Stores [item]. With [pendingProviderMark], a single item is also kept as a pending provider
+     * mark, for a mark made while a tracking provider is the watch progress source.
+     */
     suspend fun markAsWatched(
         item: WatchedItem,
-        profileId: Int = profileManager.activeProfileId.value
+        profileId: Int = profileManager.activeProfileId.value,
+        pendingProviderMark: Boolean = false
     ) {
         store(profileId).edit { preferences ->
             val current = preferences[watchedItemsKey] ?: emptySet()
@@ -110,6 +189,10 @@ class WatchedItemsPreferences @Inject constructor(
                 extractWatchedItemKey(json) == itemKey
             }
             preferences[watchedItemsKey] = filtered.toSet() + gson.toJson(item)
+            if (pendingProviderMark && item.season == null && item.episode == null) {
+                preferences[pendingProviderMarksKey] =
+                    preferences[pendingProviderMarksKey].orEmpty() + item.contentId
+            }
         }
     }
 
@@ -141,6 +224,23 @@ class WatchedItemsPreferences @Inject constructor(
                 extractWatchedItemKey(json) == removeKey
             }
             preferences[watchedItemsKey] = filtered.toSet()
+            if (season == null && episode == null) {
+                val pending = preferences[pendingProviderMarksKey].orEmpty()
+                if (contentId in pending) preferences[pendingProviderMarksKey] = pending - contentId
+            }
+        }
+    }
+
+    /** Stops treating [contentIds] as pending once the tracking provider reports them watched. */
+    suspend fun acknowledgePendingProviderMarks(
+        contentIds: Set<String>,
+        profileId: Int = profileManager.activeProfileId.value
+    ) {
+        if (contentIds.isEmpty()) return
+        store(profileId).edit { preferences ->
+            val pending = preferences[pendingProviderMarksKey].orEmpty()
+            val remaining = pending - contentIds
+            if (remaining.size != pending.size) preferences[pendingProviderMarksKey] = remaining
         }
     }
 
@@ -162,17 +262,13 @@ class WatchedItemsPreferences @Inject constructor(
 
     suspend fun getAllItems(profileId: Int = profileManager.activeProfileId.value): List<WatchedItem> {
         val preferences = store(profileId).data.first()
-        return (preferences[watchedItemsKey] ?: emptySet()).mapNotNull { raw ->
-            runCatching { gson.fromJson(raw, WatchedItem::class.java) }.getOrNull()
-        }
+        return decodeItems(profileId, preferences[watchedItemsKey] ?: emptySet())
     }
 
     suspend fun mergeRemoteItems(remoteItems: List<WatchedItem>, profileId: Int = profileManager.activeProfileId.value) {
         store(profileId).edit { preferences ->
             val current = preferences[watchedItemsKey] ?: emptySet()
-            val localItems = current.mapNotNull { json ->
-                runCatching { gson.fromJson(json, WatchedItem::class.java) }.getOrNull()
-            }
+            val localItems = decodeItems(profileId, current)
             val localKeys = localItems.map { Triple(it.contentId, it.season, it.episode) }.toSet()
 
             val newItems = remoteItems.filter { remote ->
@@ -188,6 +284,8 @@ class WatchedItemsPreferences @Inject constructor(
     suspend fun applyRemoteChanges(
         upserts: List<WatchedItem>,
         deletes: List<Triple<String, Int?, Int?>>,
+        pendingUpsertKeys: Set<WatchedMutationKey> = emptySet(),
+        pendingDeleteKeys: Set<WatchedMutationKey> = emptySet(),
         profileId: Int = profileManager.activeProfileId.value
     ) {
         if (upserts.isEmpty() && deletes.isEmpty()) {
@@ -200,16 +298,25 @@ class WatchedItemsPreferences @Inject constructor(
             val current = preferences[watchedItemsKey] ?: emptySet()
             beforeCount = current.size
             val itemsByKey = linkedMapOf<Triple<String, Int?, Int?>, WatchedItem>()
-            current.mapNotNull { json ->
-                runCatching { gson.fromJson(json, WatchedItem::class.java) }.getOrNull()
-            }.forEach { item ->
+            decodeItems(profileId, current).forEach { item ->
                 itemsByKey[Triple(item.contentId, item.season, item.episode)] = item
             }
-            deletes.forEach { key ->
-                itemsByKey.remove(key)
+            deletes.forEach { (contentId, season, episode) ->
+                val mutationKey = WatchedMutationKey(contentId, season, episode)
+                if (mutationKey !in pendingUpsertKeys) {
+                    itemsByKey.remove(Triple(contentId, season, episode))
+                }
             }
             upserts.forEach { item ->
-                itemsByKey[Triple(item.contentId, item.season, item.episode)] = item
+                val mutationKey = item.mutationKey()
+                when {
+                    mutationKey in pendingDeleteKeys -> itemsByKey.remove(
+                        Triple(item.contentId, item.season, item.episode)
+                    )
+                    mutationKey !in pendingUpsertKeys -> itemsByKey[
+                        Triple(item.contentId, item.season, item.episode)
+                    ] = item
+                }
             }
             preferences[watchedItemsKey] = itemsByKey.values
                 .map { gson.toJson(it) }
@@ -221,35 +328,35 @@ class WatchedItemsPreferences @Inject constructor(
 
     suspend fun replaceWithRemoteItems(
         remoteItems: List<WatchedItem>,
-        lastSuccessfulPushMs: Long = 0L,
+        pendingUpsertKeys: Set<WatchedMutationKey> = emptySet(),
+        pendingDeleteKeys: Set<WatchedMutationKey> = emptySet(),
+        lastSuccessfulPushMs: Long? = null,
         profileId: Int = profileManager.activeProfileId.value
     ): Boolean {
         var preservedLocalItems = false
         store(profileId).edit { preferences ->
             val current = preferences[watchedItemsKey] ?: emptySet()
-            Log.d(TAG, "replaceWithRemoteItems: profile=$profileId current=${current.size} remote=${remoteItems.size} lastPush=$lastSuccessfulPushMs")
-            if (remoteItems.isEmpty() && current.isNotEmpty()) {
-                Log.w(TAG, "replaceWithRemoteItems: remote list empty while local has ${current.size} entries; preserving local watched items")
-                return@edit
-            }
+            Log.d(TAG, "replaceWithRemoteItems: profile=$profileId current=${current.size} remote=${remoteItems.size}")
             val deduped = linkedMapOf<Triple<String, Int?, Int?>, WatchedItem>()
-            remoteItems.forEach { item ->
+            remoteItems.filterNot { it.mutationKey() in pendingDeleteKeys }.forEach { item ->
                 deduped[Triple(item.contentId, item.season, item.episode)] = item
             }
-            // Preserve local items that were marked as watched after the last
-            // successful push - they haven't reached remote yet, so their
-            // absence doesn't mean deletion on another device.
-            if (lastSuccessfulPushMs > 0L) {
-                val localItems = current.mapNotNull { json ->
-                    runCatching { gson.fromJson(json, WatchedItem::class.java) }.getOrNull()
+            val localItems = decodeItems(profileId, current)
+            localItems.forEach { localItem ->
+                val mutationKey = localItem.mutationKey()
+                val itemKey = Triple(localItem.contentId, localItem.season, localItem.episode)
+                if (ServerItemRef.isServerId(localItem.contentId)) {
+                    deduped[itemKey] = localItem
+                    return@forEach
                 }
-                localItems.forEach { localItem ->
-                    val key = Triple(localItem.contentId, localItem.season, localItem.episode)
-                    if (key !in deduped && localItem.watchedAt > lastSuccessfulPushMs) {
-                        deduped[key] = localItem
-                        preservedLocalItems = true
-                        Log.d(TAG, "replaceWithRemoteItems: preserved local item ${localItem.contentId} s${localItem.season}e${localItem.episode} (watchedAt=${localItem.watchedAt} > lastPush=$lastSuccessfulPushMs)")
-                    }
+                val preservePendingUpsert = mutationKey in pendingUpsertKeys
+                val preserveAfterPush = mutationKey !in pendingDeleteKeys &&
+                    itemKey !in deduped &&
+                    lastSuccessfulPushMs != null &&
+                    localItem.watchedAt > lastSuccessfulPushMs
+                if (preservePendingUpsert || preserveAfterPush) {
+                    deduped[itemKey] = localItem
+                    preservedLocalItems = true
                 }
             }
             preferences[watchedItemsKey] = deduped.values
@@ -265,7 +372,32 @@ class WatchedItemsPreferences @Inject constructor(
             preferences.remove(watchedItemsKey)
             preferences.remove(deltaCursorKey)
             preferences.remove(deltaInitializedKey)
+            preferences.remove(pendingProviderMarksKey)
         }
+        decodeCaches.remove(profileId)
+    }
+
+    /**
+     * [clearAll] for a change of watch progress source, except for the pending provider marks,
+     * which no source can bring back.
+     */
+    suspend fun clearAllKeepingPendingProviderMarks(profileId: Int = profileManager.activeProfileId.value) {
+        store(profileId).edit { preferences ->
+            val pending = pendingMarksStillWatched(preferences)
+            val keptKeys = pending.mapTo(HashSet()) { contentId -> buildWatchedKey(contentId, null, null) }
+            val kept = preferences[watchedItemsKey].orEmpty()
+                .filterTo(linkedSetOf()) { json -> extractWatchedItemKey(json) in keptKeys }
+            if (kept.isEmpty()) {
+                preferences.remove(watchedItemsKey)
+                preferences.remove(pendingProviderMarksKey)
+            } else {
+                preferences[watchedItemsKey] = kept
+                preferences[pendingProviderMarksKey] = pending
+            }
+            preferences.remove(deltaCursorKey)
+            preferences.remove(deltaInitializedKey)
+        }
+        decodeCaches.remove(profileId)
     }
 
     private fun watchedItemKey(item: WatchedItem): String =

@@ -3,10 +3,10 @@ package com.nuvio.tv.core.di
 import android.content.Context
 import android.util.Log
 import com.nuvio.tv.BuildConfig
+import com.nuvio.tv.core.network.NoDelaySocketFactory
 import com.nuvio.tv.data.remote.api.AddonApi
 import com.nuvio.tv.data.remote.api.AniSkipApi
 import com.nuvio.tv.data.remote.api.AnimeSkipApi
-import com.nuvio.tv.data.remote.api.ArmApi
 import com.nuvio.tv.data.remote.api.AuthDiagnosticReportApi
 import com.nuvio.tv.data.remote.api.GitHubReleaseApi
 import com.nuvio.tv.data.remote.api.SupportersApi
@@ -99,22 +99,15 @@ object NetworkModule {
         .add(KotlinJsonAdapterFactory())
         .build()
 
+    /** Validating client for fixed first-party endpoints. Addon URLs use `addonPermissive`. */
     @Provides
     @Singleton
     fun provideOkHttpClient(@ApplicationContext context: Context): OkHttpClient {
-        val trustAllManager = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-        }
-        val sslContext = SSLContext.getInstance("TLS").apply {
-            init(null, arrayOf<TrustManager>(trustAllManager), SecureRandom())
-        }
         return OkHttpClient.Builder()
             .dns(IPv4FirstDns())
-            .sslSocketFactory(sslContext.socketFactory, trustAllManager)
-            .hostnameVerifier { _, _ -> true }
-            .cache(Cache(File(context.cacheDir, "http_cache"), 50L * 1024 * 1024)) // 50 MB disk cache
+            .socketFactory(NoDelaySocketFactory)
+            // Keep separate from the old trust-all cache. Cached responses bypass a new TLS handshake.
+            .cache(Cache(File(context.cacheDir, "http_cache_v2"), 50L * 1024 * 1024)) // 50 MB disk cache
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .addInterceptor { chain ->
@@ -144,11 +137,40 @@ object NetworkModule {
             .build()
     }
 
+    /**
+     * Permissive client for addon-provided URLs, including self-hosted servers with self-signed
+     * certificates. Uses a separate cache from first-party traffic.
+     *
+     * Do not use for first-party endpoints.
+     */
+    @Provides
+    @Singleton
+    @Named("addonPermissive")
+    fun provideAddonPermissiveOkHttpClient(
+        @ApplicationContext context: Context,
+        okHttpClient: OkHttpClient
+    ): OkHttpClient {
+        val trustAllManager = object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+        }
+        val sslContext = SSLContext.getInstance("TLS").apply {
+            init(null, arrayOf<TrustManager>(trustAllManager), SecureRandom())
+        }
+        return okHttpClient.newBuilder()
+            .cache(Cache(File(context.cacheDir, "addon_http_cache"), 50L * 1024 * 1024))
+            .sslSocketFactory(sslContext.socketFactory, trustAllManager)
+            .hostnameVerifier { _, _ -> true }
+            .build()
+    }
+
     @Provides
     @Singleton
     @Named("customServerAuth")
     fun provideCustomServerAuthHttpClient(): OkHttpClient = OkHttpClient.Builder()
         .dns(IPv4FirstDns())
+        .socketFactory(NoDelaySocketFactory)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .addInterceptor { chain ->
@@ -171,6 +193,7 @@ object NetworkModule {
     fun provideDirectDebridOkHttpClient(): OkHttpClient =
         OkHttpClient.Builder()
             .dns(IPv4FirstDns())
+            .socketFactory(NoDelaySocketFactory)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .addInterceptor { chain ->
@@ -189,6 +212,7 @@ object NetworkModule {
     @Named("simkl")
     fun provideSimklOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
         .dns(IPv4FirstDns())
+        .socketFactory(NoDelaySocketFactory)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
@@ -279,7 +303,10 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideRetrofit(okHttpClient: OkHttpClient, moshi: Moshi): Retrofit =
+    fun provideRetrofit(
+        @Named("addonPermissive") okHttpClient: OkHttpClient,
+        moshi: Moshi
+    ): Retrofit =
         Retrofit.Builder()
             .baseUrl("https://placeholder.nuvio.tv/")
             .client(okHttpClient)
@@ -439,21 +466,6 @@ object NetworkModule {
     @Singleton
     fun provideAniSkipApi(@Named("aniSkip") retrofit: Retrofit): AniSkipApi =
         retrofit.create(AniSkipApi::class.java)
-
-    @Provides
-    @Singleton
-    @Named("arm")
-    fun provideArmRetrofit(okHttpClient: OkHttpClient, moshi: Moshi): Retrofit =
-        Retrofit.Builder()
-            .baseUrl("https://arm.haglund.dev/api/v2/")
-            .client(okHttpClient)
-            .addConverterFactory(MoshiConverterFactory.create(moshi))
-            .build()
-
-    @Provides
-    @Singleton
-    fun provideArmApi(@Named("arm") retrofit: Retrofit): ArmApi =
-        retrofit.create(ArmApi::class.java)
 
     @Provides
     @Singleton

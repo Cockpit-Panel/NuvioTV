@@ -4,7 +4,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 data class ServerCapabilities(
     val emailPasswordAuth: Boolean,
-    val tvLogin: Boolean
+    val tvLogin: Boolean,
+    val watchParty: Boolean = false
 )
 
 data class ServerConfiguration(
@@ -15,6 +16,7 @@ data class ServerConfiguration(
     val discoveryUrl: String? = null,
     val fallbackBackendUrl: String? = null,
     val tvLoginWebBaseUrl: String? = null,
+    val deviceLoginWebBaseUrl: String? = null,
     val avatarPublicBaseUrl: String? = null
 ) {
     val isSecure: Boolean
