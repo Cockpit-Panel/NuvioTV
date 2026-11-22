@@ -1014,6 +1014,7 @@ class MainActivity : ComponentActivity() {
         if (::jankStats.isInitialized) jankStats.isTrackingEnabled = true
         memberAccessRepository.refreshIfStale()
         lifecycleScope.launch {
+            if (!authManager.validatePanelSession()) return@launch
             deviceSessionRegistration.requestForegroundRegistration()
             startupSyncService.requestForegroundSync()
         }

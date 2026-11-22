@@ -183,7 +183,7 @@ class AccountViewModel @Inject constructor(
                     _uiState.update { it.copy(availablePortals = portals, isPortalLoading = false) }
                     var failure: Throwable? = null
                     for (portal in portals.ifEmpty { listOf(com.nuvio.tv.data.remote.panel.PanelPortalDto(0, "Default", "")) }) {
-                        val result = authManager.signInWithPanel(portal.url, username, password, Build.MODEL)
+                        val result = authManager.signInWithPanel(portal, username, password, Build.MODEL)
                         if (result.isSuccess) {
                             _uiState.update { it.copy(isLoading = false, error = null) }
                             return@launch

@@ -400,12 +400,12 @@ class AuthManager @Inject constructor(
         response.body()?.portals ?: error("Empty portals response")
     }
 
-    suspend fun signInWithPanel(serverUrl: String, username: String, password: String, deviceName: String? = null): Result<Unit> = runCatching {
+    suspend fun signInWithPanel(portal: PanelPortalDto, username: String, password: String, deviceName: String? = null): Result<Unit> = runCatching {
         check(isPanelCloudConfigured()) { "Panel cloud API URL is not configured" }
         val normalizedUsername = username.trim()
         val attempts = listOf(
             PanelLoginRequest(username = normalizedUsername, password = password),
-            PanelLoginRequest(serverUrl = serverUrl.trim().ifBlank { null }, username = normalizedUsername, password = password, deviceName = deviceName)
+            PanelLoginRequest(serverUrl = portal.url.trim().ifBlank { null }, username = normalizedUsername, password = password, deviceName = deviceName)
         ).distinct()
         var lastError = "Panel login failed"
         var body: com.nuvio.tv.data.remote.panel.PanelLoginResponse? = null
@@ -416,11 +416,47 @@ class AuthManager @Inject constructor(
         }
         val login = body ?: error(lastError)
         val session = PanelSession(login.tokens.accessToken, login.tokens.refreshToken, login.user.id,
-            login.user.email.ifBlank { normalizedUsername }, login.user.displayName, login.user.serverUrl ?: serverUrl)
+            login.user.email.ifBlank { normalizedUsername }, login.user.displayName,
+            login.user.serverUrl ?: portal.url, login.user.serviceId ?: portal.id)
         panelSessionDataStore.save(session)
         currentPanelSession = session
         _authState.value = AuthState.FullAccount(session.userId, session.email)
         authSessionNoticeDataStore.markNuvioAuthenticated()
+    }
+
+    suspend fun validatePanelSession(): Boolean {
+        val session = currentPanelSession ?: panelSessionDataStore.getSession() ?: return true
+        currentPanelSession = session
+        return try {
+            val authorization = "Bearer ${session.accessToken}"
+            val validation = panelCloudApi.getAddons(authorization, 1)
+            if (validation.code() == 401 || validation.code() == 403) {
+                Log.w(TAG, "Panel account is no longer active; clearing local authentication")
+                signOut(explicit = false)
+                false
+            } else {
+                if (validation.isSuccessful) reconcilePanelService(session)
+                true
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Throwable) {
+            Log.w(TAG, "Unable to validate panel account; keeping cached authentication", error)
+            true
+        }
+    }
+
+    private suspend fun reconcilePanelService(session: PanelSession) {
+        val serviceId = session.serviceId ?: return
+        val response = panelCloudApi.getPortals()
+        if (!response.isSuccessful) return
+        val portal = response.body()?.portals?.firstOrNull { it.id == serviceId } ?: return
+        val normalizedUrl = portal.url.trim().trimEnd('/')
+        if (normalizedUrl.isBlank() || normalizedUrl == session.serverUrl.orEmpty().trimEnd('/')) return
+        val updated = session.copy(serverUrl = normalizedUrl)
+        panelSessionDataStore.save(updated)
+        currentPanelSession = updated
+        Log.i(TAG, "Updated panel service endpoint for stable service id=$serviceId")
     }
 
     suspend fun getAccessToken(): String? = currentPanelSession?.accessToken ?: auth.currentAccessTokenOrNull()

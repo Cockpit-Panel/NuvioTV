@@ -22,7 +22,8 @@ data class PanelUserDto(
     val id: String,
     val email: String,
     @Json(name = "display_name") val displayName: String? = null,
-    @Json(name = "server_url") val serverUrl: String? = null
+    @Json(name = "server_url") val serverUrl: String? = null,
+    @Json(name = "service_id") val serviceId: Int? = null
 )
 
 @JsonClass(generateAdapter = true)

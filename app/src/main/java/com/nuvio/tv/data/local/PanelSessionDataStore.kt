@@ -23,7 +23,8 @@ data class PanelSession(
     val userId: String,
     val email: String,
     val displayName: String? = null,
-    val serverUrl: String? = null
+    val serverUrl: String? = null,
+    val serviceId: Int? = null
 )
 
 @Singleton
@@ -36,6 +37,7 @@ class PanelSessionDataStore @Inject constructor(
     private val emailKey = stringPreferencesKey("email")
     private val displayNameKey = stringPreferencesKey("display_name")
     private val serverUrlKey = stringPreferencesKey("server_url")
+    private val serviceIdKey = stringPreferencesKey("service_id")
 
     val session: Flow<PanelSession?> = context.panelSessionDataStore.data.map { preferences ->
         val accessToken = preferences[accessTokenKey]
@@ -50,7 +52,8 @@ class PanelSessionDataStore @Inject constructor(
                 userId = userId,
                 email = email,
                 displayName = preferences[displayNameKey],
-                serverUrl = preferences[serverUrlKey]
+                serverUrl = preferences[serverUrlKey],
+                serviceId = preferences[serviceIdKey]?.toIntOrNull()
             )
         }
     }
@@ -63,8 +66,9 @@ class PanelSessionDataStore @Inject constructor(
             session.refreshToken?.let { preferences[refreshTokenKey] = it }
             preferences[userIdKey] = session.userId
             preferences[emailKey] = session.email
-            session.displayName?.let { preferences[displayNameKey] = it }
-            session.serverUrl?.let { preferences[serverUrlKey] = it }
+            if (session.displayName == null) preferences.remove(displayNameKey) else preferences[displayNameKey] = session.displayName
+            if (session.serverUrl == null) preferences.remove(serverUrlKey) else preferences[serverUrlKey] = session.serverUrl
+            if (session.serviceId == null) preferences.remove(serviceIdKey) else preferences[serviceIdKey] = session.serviceId.toString()
         }
     }
 
@@ -76,6 +80,7 @@ class PanelSessionDataStore @Inject constructor(
             preferences.remove(emailKey)
             preferences.remove(displayNameKey)
             preferences.remove(serverUrlKey)
+            preferences.remove(serviceIdKey)
         }
     }
 }
