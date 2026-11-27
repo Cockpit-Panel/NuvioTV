@@ -81,14 +81,13 @@ fun EssentialAddonSetupScreen(
                 color = NuvioTheme.colors.TextSecondary
             )
             Spacer(modifier = Modifier.height(28.dp))
-            Row(
+            Box(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(18.dp),
-                verticalAlignment = Alignment.CenterVertically
+                contentAlignment = Alignment.Center
             ) {
                 Card(
                     modifier = Modifier
-                        .weight(1f)
+                        .fillMaxWidth(0.55f)
                         .height(220.dp),
                     colors = CardDefaults.cardColors(containerColor = NuvioTheme.colors.BackgroundCard),
                     shape = RoundedCornerShape(NuvioTheme.radii.md)
@@ -169,47 +168,6 @@ fun EssentialAddonSetupScreen(
                         }
                     }
                 }
-                Card(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(220.dp),
-                    colors = CardDefaults.cardColors(containerColor = NuvioTheme.colors.BackgroundCard),
-                    shape = RoundedCornerShape(NuvioTheme.radii.md)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(22.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PhoneAndroid,
-                            contentDescription = null,
-                            tint = NuvioTheme.colors.Primary
-                        )
-                        Text(
-                            text = stringResource(R.string.addon_manage_from_phone_title),
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, textDirection = TextDirection.Content),
-                            color = NuvioTheme.colors.TextPrimary,
-                        )
-                        Text(
-                            text = stringResource(R.string.addon_manage_addons_only_from_phone_subtitle),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = NuvioTheme.colors.TextSecondary
-                        )
-                        Button(
-                            onClick = { viewModel.startQrMode(AddonWebConfigMode.ADDONS_ONLY) },
-                            colors = ButtonDefaults.colors(
-                                containerColor = NuvioTheme.colors.BackgroundElevated,
-                                contentColor = NuvioTheme.colors.TextPrimary,
-                                focusedContainerColor = NuvioTheme.colors.FocusBackground,
-                                focusedContentColor = NuvioTheme.colors.Primary
-                            ),
-                            shape = ButtonDefaults.shape(RoundedCornerShape(50))
-                        ) {
-                            Icon(imageVector = Icons.Default.QrCode2, contentDescription = null)
-                            Text(text = stringResource(R.string.essential_addon_show_qr))
-                        }
-                    }
-                }
             }
             Spacer(modifier = Modifier.height(NuvioTheme.spacing.xl))
             Button(
@@ -229,17 +187,7 @@ fun EssentialAddonSetupScreen(
             }
         }
 
-        if (uiState.isQrModeActive || uiState.pendingChange != null) {
-            if (uiState.isQrModeActive) {
-                QrCodeOverlay(
-                    qrBitmap = uiState.qrCodeBitmap,
-                    serverUrl = uiState.serverUrl,
-                    instruction = stringResource(R.string.addon_qr_addons_only_scan_instruction),
-                    onClose = viewModel::stopQrMode,
-                    hasPendingChange = uiState.pendingChange != null
-                )
-            }
-
+        if (uiState.pendingChange != null) {
             uiState.pendingChange?.let { pending ->
                 ConfirmAddonChangesDialog(
                     pendingChange = pending,

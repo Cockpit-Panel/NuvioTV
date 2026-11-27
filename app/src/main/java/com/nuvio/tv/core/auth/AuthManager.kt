@@ -35,6 +35,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Headers
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -110,16 +113,44 @@ class AuthManager @Inject constructor(
     private var startupAuthDiagnostics: AuthDiagnosticsSession? = null
     private var startupAuthCompleted = false
     @Volatile private var currentPanelSession: PanelSession? = null
+    private val panelValidationMutex = Mutex()
+    @Volatile private var lastPanelValidatedAtMs: Long = 0L
+    internal var panelValidationClockMs: () -> Long = System::currentTimeMillis
 
-    val supportsFullCloudSync: Boolean get() = currentPanelSession == null
+    val supportsFullCloudSync: Boolean get() = !isPanelCloudConfigured() && currentPanelSession == null
 
     init {
-        observeSessionStatus()
+        if (isPanelCloudConfigured()) {
+            observePanelSession()
+        } else {
+            observeSessionStatus()
+        }
+    }
+
+    private fun observePanelSession() {
         scope.launch {
+            var lastValidatedStartupToken: String? = null
             panelSessionDataStore.session.collect { session ->
                 currentPanelSession = session
-                if (session != null) {
+                if (session == null) {
+                    lastPanelValidatedAtMs = 0L
+                    cachedEffectiveUserId = null
+                    cachedEffectiveUserSourceUserId = null
+                    _authState.value = AuthState.SignedOut
+                } else {
+                    if (cachedEffectiveUserSourceUserId != session.userId) {
+                        cachedEffectiveUserId = null
+                        cachedEffectiveUserSourceUserId = null
+                    }
+                    cachedEffectiveUserId = session.userId
+                    cachedEffectiveUserSourceUserId = session.userId
                     _authState.value = AuthState.FullAccount(session.userId, session.email)
+                    if (lastValidatedStartupToken != session.accessToken) {
+                        lastValidatedStartupToken = session.accessToken
+                        scope.launch {
+                            validatePanelSession(force = false, minIntervalMs = 5_000L)
+                        }
+                    }
                 }
             }
         }
@@ -292,6 +323,7 @@ class AuthManager @Inject constructor(
      */
     suspend fun getEffectiveUserId(fallbackToOwnIdOnFailure: Boolean = true): String? {
         val userId = currentUserId ?: return null
+        if (!supportsFullCloudSync) return userId
         if (cachedEffectiveUserSourceUserId != userId) {
             cachedEffectiveUserId = null
             cachedEffectiveUserSourceUserId = null
@@ -430,8 +462,7 @@ class AuthManager @Inject constructor(
                 body = response.body()
                 break
             }
-            lastError = response.errorBody()?.string().orEmpty()
-                .ifBlank { "Panel login failed (${response.code()})" }
+            lastError = extractPanelErrorMessage(response.errorBody()?.string().orEmpty(), response.code())
         }
         val login = body ?: error(lastError)
         val session = PanelSession(
@@ -443,24 +474,69 @@ class AuthManager @Inject constructor(
             serverUrl = login.user.serverUrl ?: portal.url,
             serviceId = login.user.serviceId ?: portal.id
         )
-        panelSessionDataStore.save(session)
+        lastPanelValidatedAtMs = panelValidationClockMs()
         currentPanelSession = session
+        panelSessionDataStore.save(session)
         _authState.value = AuthState.FullAccount(session.userId, session.email)
         authSessionNoticeDataStore.markNuvioAuthenticated()
     }
 
-    suspend fun validatePanelSession(): Boolean {
-        val session = currentPanelSession ?: panelSessionDataStore.getSession() ?: return true
+    private fun extractPanelErrorMessage(rawBody: String, statusCode: Int): String {
+        val trimmed = rawBody.trim()
+        if (trimmed.startsWith("{")) {
+            val parsed = runCatching {
+                val obj = json.parseToJsonElement(trimmed) as? JsonObject
+                obj?.get("error")?.jsonPrimitive?.contentOrNull
+                    ?: obj?.get("message")?.jsonPrimitive?.contentOrNull
+                    ?: obj?.get("detail")?.jsonPrimitive?.contentOrNull
+            }.getOrNull()
+            if (!parsed.isNullOrBlank()) return parsed
+        }
+        if (trimmed.isNotBlank() && !trimmed.startsWith("<")) return trimmed
+        return when (statusCode) {
+            401 -> "Invalid login credentials"
+            403 -> "Access denied"
+            404 -> "Panel cloud service unavailable"
+            else -> "Panel login failed ($statusCode)"
+        }
+    }
+
+    suspend fun validatePanelSession(
+        force: Boolean = true,
+        minIntervalMs: Long = 0L
+    ): Boolean = panelValidationMutex.withLock {
+        if (!isPanelCloudConfigured()) return@withLock true
+        val session = currentPanelSession ?: panelSessionDataStore.getSession()
+        if (session == null) {
+            currentPanelSession = null
+            lastPanelValidatedAtMs = 0L
+            cachedEffectiveUserId = null
+            cachedEffectiveUserSourceUserId = null
+            _authState.value = AuthState.SignedOut
+            return@withLock false
+        }
         currentPanelSession = session
-        return try {
+        val now = panelValidationClockMs()
+        if (!force && minIntervalMs > 0L && lastPanelValidatedAtMs > 0L && now - lastPanelValidatedAtMs < minIntervalMs) {
+            return@withLock true
+        }
+        return@withLock try {
             val validation = panelCloudApi.getAddons("Bearer ${session.accessToken}", 1)
-            if (validation.code() == 401 || validation.code() == 403) {
-                Log.w(TAG, "Panel account is no longer active; clearing local authentication")
-                signOut(explicit = false)
-                false
-            } else {
-                if (validation.isSuccessful) reconcilePanelService(session)
+            if (validation.isSuccessful) {
+                lastPanelValidatedAtMs = panelValidationClockMs()
+                runCatching { reconcilePanelService(session) }
+                    .onFailure { Log.w(TAG, "Panel service reconciliation failed", it) }
                 true
+            } else {
+                val errorBody = runCatching { validation.errorBody()?.string() }.getOrNull()
+                if (isPanelSessionInvalidResponse(validation.code(), errorBody)) {
+                    Log.w(TAG, "Panel account is no longer active (code=${validation.code()}); clearing local authentication")
+                    signOutIfMatchingPanelToken(session.accessToken)
+                    false
+                } else {
+                    Log.w(TAG, "Panel validation returned non-terminal status code=${validation.code()}; keeping cached authentication")
+                    true
+                }
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -468,6 +544,29 @@ class AuthManager @Inject constructor(
             Log.w(TAG, "Unable to validate panel account; keeping cached authentication", error)
             true
         }
+    }
+
+    suspend fun invalidatePanelSessionIfUnauthorized(
+        expectedAccessToken: String,
+        statusCode: Int,
+        errorBody: String?
+    ): Boolean {
+        if (!isPanelCloudConfigured()) return false
+        if (!isPanelSessionInvalidResponse(statusCode, errorBody)) return false
+        return panelValidationMutex.withLock {
+            if (currentPanelSession?.accessToken != expectedAccessToken) {
+                return@withLock false
+            }
+            Log.w(TAG, "Panel API rejected active token (code=$statusCode); clearing local authentication")
+            signOut(explicit = false)
+            true
+        }
+    }
+
+    private suspend fun signOutIfMatchingPanelToken(expectedAccessToken: String) {
+        val activeToken = currentPanelSession?.accessToken ?: panelSessionDataStore.getSession()?.accessToken
+        if (activeToken != null && activeToken != expectedAccessToken) return
+        signOut(explicit = false)
     }
 
     private suspend fun reconcilePanelService(session: PanelSession) {
@@ -488,15 +587,18 @@ class AuthManager @Inject constructor(
 
     suspend fun signOut(explicit: Boolean = true) {
         sessionValidator.reset()
+        lastPanelValidatedAtMs = 0L
         if (explicit) {
             authSessionNoticeDataStore.markNuvioExplicitLogout()
         } else {
             authSessionNoticeDataStore.markUnexpectedNuvioLogoutIfNeeded()
         }
-        try {
-            auth.signOut()
-        } catch (e: Exception) {
-            Log.e(TAG, "Sign out failed", e)
+        if (!isPanelCloudConfigured()) {
+            try {
+                auth.signOut()
+            } catch (e: Exception) {
+                Log.e(TAG, "Sign out failed", e)
+            }
         }
         panelSessionDataStore.clear()
         currentPanelSession = null

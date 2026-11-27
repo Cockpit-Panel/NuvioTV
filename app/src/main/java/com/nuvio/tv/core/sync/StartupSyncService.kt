@@ -313,10 +313,20 @@ class StartupSyncService @Inject constructor(
             if (pullKey(currentState.userId) != key || startupPullJob?.isActive == true) return@launch
             val profileId = profileManager.activeProfileId.value
             Log.d(TAG, "Activity sync started profile=$profileId reason=$reason")
-            val succeeded = coroutineScope {
-                val watchState = async { pullPeriodicWatchState() }
-                val library = async { pullPeriodicLibrary() }
-                watchState.await() && library.await()
+            val succeeded = if (!authManager.supportsFullCloudSync) {
+                if (!authManager.validatePanelSession(force = true)) {
+                    false
+                } else {
+                    runCatching { pullPanelManagedData(profileId) }
+                        .onFailure { Log.e(TAG, "Activity panel sync failed profile=$profileId reason=$reason", it) }
+                        .isSuccess
+                }
+            } else {
+                coroutineScope {
+                    val watchState = async { pullPeriodicWatchState() }
+                    val library = async { pullPeriodicLibrary() }
+                    watchState.await() && library.await()
+                }
             }
             if (succeeded) {
                 activityPullFreshness = SurfacePullFreshness(

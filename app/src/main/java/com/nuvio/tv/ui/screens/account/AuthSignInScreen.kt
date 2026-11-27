@@ -24,7 +24,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.tv.material3.*
 import com.nuvio.tv.R
 import com.nuvio.tv.domain.model.AuthState
-import com.nuvio.tv.ui.theme.NuvioColors
 import com.nuvio.tv.ui.theme.NuvioTheme
 
 @Composable
@@ -38,6 +37,9 @@ fun AuthSignInScreen(
     var password by remember { mutableStateOf("") }
 
     BackHandler { onBackPress() }
+    LaunchedEffect(Unit) {
+        viewModel.clearError()
+    }
     LaunchedEffect(uiState.authState) {
         if (uiState.authState is AuthState.FullAccount) onSuccess()
     }
@@ -45,7 +47,7 @@ fun AuthSignInScreen(
     Box(Modifier.fillMaxSize().background(Color(0xFF0D101E)), contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier.fillMaxWidth(0.5f).widthIn(max = 640.dp)
-                .border(1.dp, NuvioColors.Border.copy(alpha = 0.75f), RoundedCornerShape(24.dp))
+                .border(1.dp, NuvioTheme.colors.Border.copy(alpha = 0.75f), RoundedCornerShape(24.dp))
                 .background(Color(0xFF12162A), RoundedCornerShape(24.dp))
                 .padding(horizontal = 32.dp, vertical = 36.dp),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -65,7 +67,7 @@ fun AuthSignInScreen(
             Spacer(Modifier.height(18.dp))
             if (uiState.isPortalLoading || uiState.isLoading) {
                 Text(stringResource(R.string.auth_signin_loading_services), style = MaterialTheme.typography.bodySmall,
-                    color = NuvioColors.TextSecondary, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                    color = NuvioTheme.colors.TextSecondary, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(18.dp))
             }
             InputField(username, { username = it }, stringResource(R.string.auth_signin_username_placeholder),

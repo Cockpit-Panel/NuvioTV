@@ -104,7 +104,7 @@ jobs:
             exit 1
           fi
 
-          if git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- . ':!*.md'; then
+          if git grep -n -E '^(<<<<<<< |=======$|>>>>>>> )' -- . ':!*.md'; then
             echo "Conflict markers remain after applying the Cockpit overlay." >&2
             exit 1
           fi

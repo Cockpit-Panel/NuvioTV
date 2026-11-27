@@ -192,9 +192,12 @@
     <string name="episodes_specials">Specials</string>
     <string name="episodes_episode">Episode</string>
     <string name="episodes_cd_watched">Watched</string>
+    <string name="episodes_cd_rewatched">Rewatched</string>
     <string name="episodes_dialog_subtitle">Episode actions</string>
     <string name="episodes_mark_watched">Mark as watched</string>
     <string name="episodes_mark_unwatched">Mark as unwatched</string>
+    <string name="episodes_mark_rewatched">Mark as rewatched</string>
+    <string name="episodes_mark_not_rewatched">Mark as not rewatched</string>
     <string name="episodes_mark_season_watched">Mark season as watched</string>
     <string name="episodes_mark_season_unwatched">Mark season as unwatched</string>
     <string name="episodes_mark_previous_watched">Mark previous in this season as watched</string>
@@ -208,6 +211,10 @@
     <string name="detail_removed_from_library">Removed from library</string>
     <string name="detail_episode_marked_watched">Episode marked as watched</string>
     <string name="detail_episode_marked_unwatched">Episode marked as unwatched</string>
+    <string name="detail_episode_marked_rewatched">Episode marked as rewatched</string>
+    <string name="detail_episode_marked_not_rewatched">Episode marked as not rewatched</string>
+    <string name="detail_rewatch_too_soon">Simkl did not record this rewatch: the episode was watched less than 48 hours ago.</string>
+    <string name="detail_rewatch_not_recorded">Simkl did not record this rewatch.</string>
     <string name="detail_lists_updated">Lists updated</string>
     <string name="detail_movie_marked_watched">Marked as watched</string>
     <string name="detail_movie_marked_unwatched">Marked as unwatched</string>
@@ -496,6 +503,27 @@
     <string name="tracking_simkl_anime_id_mal">Prefer MyAnimeList</string>
     <string name="tracking_simkl_anime_id_kitsu">Prefer Kitsu</string>
     <string name="tracking_simkl_anime_id_tvdb">Prefer TVDB</string>
+    <string name="settings_tracking_completion_title">Watched threshold</string>
+    <string name="settings_tracking_completion_subtitle">Playback percentage required to mark a title as watched. End-credits markers take priority when available.</string>
+    <string name="settings_tracking_completion_value">%1$s%%</string>
+    <string name="settings_tracking_rewatch_title">Track Rewatches</string>
+    <string name="settings_tracking_rewatch_subtitle">Log repeat viewings of titles finished over 2 days ago as separate Simkl rewatch sessions, and track active runs in Continue Watching.</string>
+    <string name="settings_tracking_rewatch_dialog_title">Track Rewatches</string>
+    <string name="settings_tracking_rewatch_dialog_subtitle">Rewatch sessions require Simkl PRO or VIP and are only created for titles you already finished.</string>
+    <string name="settings_tracking_rewatch_off">Off</string>
+    <string name="settings_tracking_rewatch_off_subtitle">Don\'t log repeat viewings to Simkl or display active rewatch sessions in Continue Watching.</string>
+    <string name="settings_tracking_rewatch_semi">Semi-automatic</string>
+    <string name="settings_tracking_rewatch_semi_subtitle">Ask once before starting a new rewatch session. Once active, remaining episodes in the run log automatically.</string>
+    <string name="settings_tracking_rewatch_automatic">Automatic</string>
+    <string name="settings_tracking_rewatch_automatic_subtitle">Automatically start a rewatch session and log repeat viewings whenever you replay a completed title.</string>
+    <string name="settings_tracking_rewatch_pro_title">Rewatch tracking requires Simkl PRO or VIP.</string>
+    <string name="settings_tracking_rewatch_pro_description">Simkl records rewatches only for Pro or VIP accounts. Sessions already on your Simkl account stay there if your plan changes.</string>
+    <string name="settings_tracking_rewatch_pro_upgrade">Upgrade</string>
+    <string name="settings_tracking_rewatch_pro_not_now">Not now</string>
+    <string name="rewatch_prompt_title">You already finished this title.</string>
+    <string name="rewatch_prompt_subtitle">Start a rewatch session on Simkl?</string>
+    <string name="rewatch_prompt_confirm">Yes</string>
+    <string name="rewatch_prompt_dismiss">No</string>
     <string name="tracking_status_connected">Connected</string>
     <string name="tracking_status_disconnected">Not connected</string>
     <string name="tracking_status_waiting">Waiting for approval</string>
@@ -546,6 +574,11 @@
     <string name="account_error_device_already_linked">Device is already linked.</string>
     <string name="account_error_generic_retry">Something went wrong. Please try again.</string>
     <string name="account_error_invalid_credentials">Incorrect email or password.</string>
+    <string name="account_error_access_denied">Access denied for this line.</string>
+    <string name="account_error_line_expired">This line has expired.</string>
+    <string name="account_error_line_disabled">This line is disabled.</string>
+    <string name="account_error_panel_not_configured">Panel cloud URL is not configured in the app build.</string>
+    <string name="account_error_portal_list_failed">Could not load the service list from portals.php.</string>
     <string name="account_error_email_not_confirmed">Please confirm your email first.</string>
     <string name="account_error_email_already_registered">An account with this email already exists.</string>
     <string name="account_error_invalid_email">Please enter a valid email address.</string>
@@ -655,6 +688,7 @@
     <string name="settings_mdblist_subtitle">External ratings providers</string>
     <string name="settings_animeskip_subtitle">Anime intro/outro skip timestamps</string>
     <string name="settings_debrid_subtitle">Experimental cloud account sources</string>
+    <string name="settings_usenet_subtitle">Providers, indexers, playback and diagnostics</string>
 
     <string name="playback_title">Playback Settings</string>
     <string name="playback_subtitle">Configure video playback and subtitle options</string>
@@ -882,6 +916,8 @@
     <string name="dv7_mode_strip_dv_desc">Removes the Dolby Vision RPU layer from all streams.</string>
     <string name="audio_dv5_to_dv81_title">Convert DV5 to DV8.1</string>
     <string name="audio_dv5_to_dv81_sub">Signal Profile 5 streams as Profile 8.1 for HDR10-compatible output. Helps on devices that do not have a native DV5 decoder.</string>
+    <string name="audio_zero_dovi_l5_title">Ignore Dolby Vision Letterbox Metadata (L5)</string>
+    <string name="audio_zero_dovi_l5_sub">Zeroes out Dolby Vision L5 active-area offsets during playback. Fixes darker or translucent bands along letterbox edges on files with broken L5 metadata.</string>
     <string name="audio_strip_hdr10plus_title">Strip HDR10+ Metadata</string>
     <string name="audio_strip_hdr10plus_sub">Remove HDR10+ dynamic metadata from streams. When Convert to DV8.1 is also enabled, stripping runs after conversion.</string>
     <string name="audio_dv7_preserve_mapping_title">Preserve DV mapping (DV7 to DV8.1)</string>
@@ -1096,6 +1132,7 @@
     <string name="layout_discover_location_in_sidebar_desc">Discover gets its own item in the side panel.</string>
     <string name="layout_poster_labels">Show Poster Labels</string>
     <string name="layout_poster_labels_sub">Show titles under posters in rows, grid, and see-all.</string>
+    <string name="layout_modern_poster_labels_sub">Show the title and year under posters in Home rows.</string>
     <string name="layout_addon_name">Show Addon Name</string>
     <string name="layout_addon_name_sub">Show source name under catalog titles.</string>
     <string name="layout_catalog_type">Show Catalog Type</string>
@@ -1890,6 +1927,8 @@
     <string name="settings_p2p_profile_fast_description">Uses more peer connections for difficult or high-bitrate torrents</string>
     <string name="settings_p2p_cache_size_title">Torrent cache size</string>
     <string name="settings_p2p_cache_size_description">Downloaded torrent data kept on this device for faster replays</string>
+    <string name="settings_p2p_cache_memory_only">Memory only</string>
+    <string name="settings_p2p_cache_memory_only_description">Torrent data stays in RAM and is never written to storage. Seeking back downloads it again.</string>
     <string name="settings_p2p_cache_none">No persistent cache</string>
     <string name="settings_p2p_cache_2_gb">2 GB</string>
     <string name="settings_p2p_cache_5_gb">5 GB</string>
@@ -2074,6 +2113,7 @@
     <string name="subtitle_off">Off</string>
     <string name="subtitle_style_title">Subtitle Style</string>
     <string name="subtitle_style_customize">Customize</string>
+    <string name="subtitle_style_customize_ass">Customize ASS/SSA styling</string>
     <string name="subtitle_style_color">Color</string>
     <string name="subtitle_style_reset">Reset</string>
     <string name="subtitle_style_font_size">Font Size</string>
@@ -3488,6 +3528,14 @@
     <string name="stream_test_video_bitrate">Average Video Bitrate: %1$s</string>
     <string name="stream_test_error_connection">Connection failed. The last played stream link may have expired or is unreachable. Please play the video again and retry.</string>
 
+    <string name="player_finding_next_stream">Finding the next stream…</string>
+    <string name="player_trying_next_stream">Trying next stream (attempt %1$d)…</string>
+    <string name="player_stream_fallback_exhausted">No more working streams. Choose another source or retry.</string>
+    <string name="usenet_builtin_addon_title">Built-in Usenet</string>
+    <string name="usenet_builtin_addon_desc">Results from your own NNTP providers and Newznab indexers. Move it to choose where they are listed.</string>
+    <string name="usenet_fallback">Automatic Usenet fallback</string>
+    <string name="usenet_fallback_description">If a Usenet stream fails, try following Usenet sources up to your configured attempt limit. Torrent and other streams never switch automatically.</string>
+
     <string name="random_episode_title">Shuffle</string>
     <string name="layout_random_episode_sub">Shuffle episodes from any series. Turning this off pauses shuffle.</string>
     <string name="random_episode_unwatched">Unwatched episodes</string>
@@ -3536,4 +3584,13 @@
     <string name="auth_signin_password_placeholder">Password</string>
     <string name="auth_signin_panel_btn">Sign-in</string>
     <string name="auth_signin_signing_in">Verifying access</string>
+    <string name="player_disc_titles">Disc titles</string>
+    <string name="player_disc_title_feature">Feature · %1$d min</string>
+    <string name="player_disc_title_extra">Extra · %1$d min</string>
+    <string name="player_disc_title_subtitles">Subtitles %1$s</string>
+    <string name="player_disc_title_failed">This title could not be played</string>
+    <plurals name="player_disc_title_clips">
+        <item quantity="one">%d clip</item>
+        <item quantity="other">%d clips</item>
+    </plurals>
 </resources>

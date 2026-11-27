@@ -161,6 +161,7 @@ import com.nuvio.tv.data.local.StartupAuthNotice
 import com.nuvio.tv.data.local.ThemeDataStore
 import com.nuvio.tv.data.repository.MemberAccessRepository
 import com.nuvio.tv.data.remote.supabase.AvatarRepository
+import com.nuvio.tv.data.simkl.SimklRewatchConsentRepository
 import com.nuvio.tv.domain.model.AppFont
 import com.nuvio.tv.domain.model.AppTheme
 import com.nuvio.tv.domain.model.CustomThemeColors
@@ -183,6 +184,7 @@ import com.nuvio.tv.ui.components.LocalCardDepthStyle
 import com.nuvio.tv.ui.components.LocalLandscapePosterMode
 import com.nuvio.tv.ui.components.LocalAlwaysBackdropWithLogo
 import com.nuvio.tv.ui.components.ProfileAvatarCircle
+import com.nuvio.tv.ui.components.RewatchPromptOverlay
 import com.nuvio.tv.ui.navigation.LocalNavViewModelStoreOwner
 import com.nuvio.tv.ui.navigation.NuvioNavHost
 import com.nuvio.tv.ui.navigation.Screen
@@ -295,9 +297,6 @@ open class MainActivity : ComponentActivity() {
     lateinit var startupSyncService: StartupSyncService
 
     @Inject
-    lateinit var androidTvChannelSyncService: com.nuvio.tv.core.sync.androidtv.AndroidTvChannelSyncService
-
-    @Inject
     lateinit var profileSyncService: ProfileSyncService
 
     @Inject
@@ -339,10 +338,19 @@ open class MainActivity : ComponentActivity() {
     @Inject
     lateinit var partyRepository: PartyRepository
 
+    /*
+     * Held in the activity, not in the player screen: the rewatch question has to survive navigation,
+     * the way mobile holds it in `MainAppContent.kt`. `SimklRewatchConsentRepository` is a `@Singleton`
+     * and not a `@HiltViewModel`, so it is injected into the activity, not taken from `hiltViewModel`.
+     */
+    @Inject
+    lateinit var rewatchConsentRepository: SimklRewatchConsentRepository
+
     private val pendingDeepLinkUrl = MutableStateFlow<String?>(null)
     private val pendingLaunchIntent = MutableStateFlow<Intent?>(null)
 
     private lateinit var jankStats: JankStats
+    private var panelSessionCheckJob: kotlinx.coroutines.Job? = null
 
     /** Activity-level launcher for external video players. Survives all navigation changes. */
     private val externalPlayerLauncher = registerForActivityResult(
@@ -426,6 +434,7 @@ open class MainActivity : ComponentActivity() {
             }
             val hasSeenAuthQrOnFirstLaunch by hasSeenAuthQrFlow.collectAsState(initial = null)
             val authState by authManager.authState.collectAsState()
+            val isPanelAuthMode = remember { authManager.isPanelCloudConfigured() }
             val context = LocalContext.current
 
             LaunchedEffect(authSessionNoticeDataStore, context) {
@@ -462,7 +471,7 @@ open class MainActivity : ComponentActivity() {
             var profilePinStates by remember { mutableStateOf<Map<Int, Boolean>>(emptyMap()) }
 
             LaunchedEffect(authState, profiles) {
-                if (authState is AuthState.FullAccount) {
+                if (authState is AuthState.FullAccount && authManager.supportsFullCloudSync) {
                     profileSyncService.pullProfileLockStates()
                         .onSuccess { profilePinStates = it }
                         .onFailure { profilePinStates = emptyMap() }
@@ -476,6 +485,20 @@ open class MainActivity : ComponentActivity() {
             }
 
             var profileSwitchedManually by remember { mutableStateOf(false) }
+            LaunchedEffect(authState) {
+                if (authState is AuthState.SignedOut) {
+                    onboardingCompletedThisSession = false
+                    onboardingProfileSyncInProgress = false
+                    hasSelectedProfileThisSession = false
+                    splashTriggered = false
+                    profileSwitchedManually = false
+                    focusedSplashColor = null
+                    focusedSplashBgUrl = null
+                    focusedSplashCacheKey = null
+                    focusedSplashTheme = null
+                    startupSession++
+                }
+            }
             val shouldAutoSelectProfile = rememberLastProfileEnabled &&
                 hasEverSelectedProfile && !activeProfileHasPin &&
                 !hasSelectedProfileThisSession && !profileSwitchedManually
@@ -757,9 +780,12 @@ open class MainActivity : ComponentActivity() {
                     if (!surfaceContentReady) {
                         // Still loading auth state; nothing to show yet.
                     } else if (
-                        hasSeenAuthQrOnFirstLaunch == false &&
-                        authState !is AuthState.FullAccount &&
-                        !onboardingCompletedThisSession
+                        (isPanelAuthMode && authState !is AuthState.FullAccount) ||
+                        (
+                            hasSeenAuthQrOnFirstLaunch == false &&
+                            authState !is AuthState.FullAccount &&
+                            !onboardingCompletedThisSession
+                        )
                     ) {
                         startupDestination = StartupDestination.Setup
                         AuthSignInScreen(
@@ -929,6 +955,11 @@ open class MainActivity : ComponentActivity() {
                             val leftPlayer = previousRoute == Screen.Player.route
                             val returnedHome = previousRoute != null && route == Screen.Home.route
                             if (leftPlayer || returnedHome) {
+                                if (isPanelAuthMode) {
+                                    lifecycleScope.launch {
+                                        authManager.validatePanelSession(force = false, minIntervalMs = 30_000L)
+                                    }
+                                }
                                 startupSyncService.requestNavigationSync()
                             }
                             previousRoute = route
@@ -1279,10 +1310,19 @@ open class MainActivity : ComponentActivity() {
                                 )
                             }
 
+
                             val isTrailerPlaying by trailerPlayerPool.isTrailerPlaying.collectAsState()
                             LaunchedEffect(isTrailerPlaying) {
                                 if (!isTrailerPlaying) ambientIdleController.onInteraction()
                             }
+                            /*
+                             * The rewatch question belongs at the same layer as `NuvioNavHost`, above
+                             * the screens and next to the other app wide overlays. Hanging it in
+                             * `PlayerScreen` alone would drop it when moving to another screen, even
+                             * though the answer is still being written. Mobile has it in
+                             * `MainAppContent.kt` at the same level.
+                             */
+                            RewatchPromptOverlay(repository = rewatchConsentRepository)
                             AmbientModeHost(
                                 controller = ambientIdleController,
                                 allowed = currentRoute?.startsWith("player/") != true &&
@@ -1353,8 +1393,10 @@ open class MainActivity : ComponentActivity() {
         if (::jankStats.isInitialized) jankStats.isTrackingEnabled = true
         memberAccessRepository.refreshIfStale()
         lifecycleScope.launch {
-            if (!authManager.validatePanelSession()) return@launch
-            deviceSessionRegistration.requestForegroundRegistration()
+            if (!authManager.validatePanelSession(force = true)) return@launch
+            if (authManager.supportsFullCloudSync) {
+                deviceSessionRegistration.requestForegroundRegistration()
+            }
             startupSyncService.requestForegroundSync()
         }
         lifecycleScope.launch {
@@ -1436,16 +1478,28 @@ open class MainActivity : ComponentActivity() {
         externalPlaybackTracker.raiseAutoNextOverlayOnReturn()
         super.onStart()
         startupSyncService.startPeriodicSurfacePulls()
-        androidTvChannelSyncService.onForegroundChanged(true)
+        startPeriodicPanelSessionCheck()
     }
 
     override fun onStop() {
         externalPlaybackTracker.onExternalPlayerCoveredApp()
         super.onStop()
         startupSyncService.stopPeriodicSurfacePulls()
-        // App going to background (e.g. user returning to the launcher): reconcile the
-        // Continue Watching channel once so Projectivy repaints it with fresh progress.
-        androidTvChannelSyncService.onForegroundChanged(false)
+        panelSessionCheckJob?.cancel()
+        panelSessionCheckJob = null
+    }
+
+    private fun startPeriodicPanelSessionCheck() {
+        if (!authManager.isPanelCloudConfigured()) return
+        if (panelSessionCheckJob?.isActive == true) return
+        panelSessionCheckJob = lifecycleScope.launch {
+            while (true) {
+                delay(2 * 60_000L)
+                if (authManager.authState.value is AuthState.FullAccount) {
+                    authManager.validatePanelSession(force = true)
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -2259,8 +2313,6 @@ private fun ModernSidebarScaffold(
                         sidebarLabelAlpha = sidebarLabelAlpha,
                         sidebarIconScale = sidebarIconScale,
                         sidebarExpandProgress = sidebarExpandProgress,
-                        isSidebarExpanded = isSidebarExpanded,
-                        sidebarCollapsePending = sidebarCollapsePending,
                         blurEnabled = modernSidebarBlurEnabled,
                         sidebarHazeState = sidebarHazeState,
                         panelShape = panelShape,

@@ -96,7 +96,15 @@ class AddonSyncService @Inject constructor(
                 val activeProfile = profileManager.activeProfile
                 val profileId = if (activeProfile != null && !activeProfile.isPrimary && activeProfile.usesPrimaryAddons) 1 else profileManager.activeProfileId.value
                 val response = panelCloudApi.getAddons("Bearer $token", profileId)
-                if (!response.isSuccessful) return@withContext Result.failure(IllegalStateException("Failed to load panel addons (${response.code()})"))
+                if (!response.isSuccessful) {
+                    val errorBody = runCatching { response.errorBody()?.string() }.getOrNull()
+                    authManager.invalidatePanelSessionIfUnauthorized(
+                        expectedAccessToken = token,
+                        statusCode = response.code(),
+                        errorBody = errorBody
+                    )
+                    return@withContext Result.failure(IllegalStateException("Failed to load panel addons (${response.code()})"))
+                }
                 val addons = response.body()?.addons.orEmpty().filter { it.enabled && it.profileId == profileId }.sortedBy { it.sortOrder }
                 addonPreferences.setUserSetNames(addons.mapNotNull { item -> item.name?.takeIf(String::isNotBlank)?.let { canonicalizeUrl(item.url) to it } }.toMap())
                 return@withContext Result.success(addons.map { it.url })

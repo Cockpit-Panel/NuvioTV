@@ -65,6 +65,7 @@ class DeviceSessionRegistration @Inject constructor(
     }
 
     internal suspend fun registerIfAuthenticated(force: Boolean = false): Boolean {
+        if (!authManager.supportsFullCloudSync) return false
         if (authManager.authState.value !is AuthState.FullAccount) return false
 
         return registrationMutex.withLock {

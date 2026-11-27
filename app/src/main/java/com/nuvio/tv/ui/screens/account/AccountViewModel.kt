@@ -119,7 +119,9 @@ class AccountViewModel @Inject constructor(
                 updateEffectiveOwnerId(state)
                 if (state is AuthState.FullAccount) {
                     loadConnectedStats()
-                    loadSyncOverview()
+                    if (authManager.supportsFullCloudSync) {
+                        loadSyncOverview()
+                    }
                 }
             }
         }
@@ -273,6 +275,10 @@ class AccountViewModel @Inject constructor(
     }
 
     fun loadLinkedDevices() {
+        if (!authManager.supportsFullCloudSync) {
+            _uiState.update { it.copy(linkedDevices = emptyList()) }
+            return
+        }
         viewModelScope.launch {
             syncRepository.getLinkedDevices().fold(
                 onSuccess = { devices ->
@@ -555,6 +561,10 @@ class AccountViewModel @Inject constructor(
     }
 
     fun loadSyncOverview() {
+        if (!authManager.supportsFullCloudSync) {
+            _uiState.update { it.copy(syncOverview = null, isSyncOverviewLoading = false) }
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(isSyncOverviewLoading = true) }
 
@@ -617,22 +627,7 @@ class AccountViewModel @Inject constructor(
             // PIN errors (from PG RAISE EXCEPTION or any wrapper)
             message.contains("incorrect pin") || message.contains("invalid pin") || message.contains("wrong pin") -> R.string.account_error_incorrect_pin
 
-            // Sync code errors
-            message.contains("expired") -> R.string.account_error_sync_code_expired
-            message.contains("invalid") && message.contains("code") -> R.string.account_error_invalid_sync_code
-            message.contains("not found") || message.contains("no sync code") -> R.string.account_error_sync_code_not_found
-            message.contains("already linked") -> R.string.account_error_device_already_linked
-            message.contains("empty response") -> R.string.account_error_generic_retry
-
-            // Auth errors
-            message.contains("invalid login credentials") -> R.string.account_error_invalid_credentials
-            message.contains("email not confirmed") -> R.string.account_error_email_not_confirmed
-            message.contains("user already registered") -> R.string.account_error_email_already_registered
-            message.contains("invalid email") -> R.string.account_error_invalid_email
-            message.contains("password") && message.contains("short") -> R.string.account_error_password_too_short
-            message.contains("password") && message.contains("weak") -> R.string.account_error_password_too_weak
-            message.contains("signup is disabled") -> R.string.account_error_signup_disabled
-            message.contains("rate limit") || message.contains("too many requests") -> R.string.account_error_rate_limited
+            // QR login errors
             message.contains("tv login") && message.contains("expired") -> R.string.account_error_qr_login_expired
             message.contains("tv login") && message.contains("invalid") -> R.string.account_error_invalid_qr_login
             message.contains("tv login") && message.contains("nonce") -> R.string.account_error_qr_login_other_device
@@ -644,6 +639,28 @@ class AccountViewModel @Inject constructor(
                 R.string.account_error_qr_login_misconfigured
             message.contains("invalid device nonce") ->
                 R.string.account_error_qr_login_invalid_request
+
+            // Sync code errors
+            message.contains("sync") && message.contains("expired") -> R.string.account_error_sync_code_expired
+            message.contains("invalid") && message.contains("code") -> R.string.account_error_invalid_sync_code
+            message.contains("not found") || message.contains("no sync code") -> R.string.account_error_sync_code_not_found
+            message.contains("already linked") -> R.string.account_error_device_already_linked
+            message.contains("empty response") -> R.string.account_error_generic_retry
+
+            // Panel & auth errors
+            message.contains("invalid login credentials") || message.contains("invalid credentials") -> R.string.account_error_invalid_credentials
+            message.contains("access denied") -> R.string.account_error_access_denied
+            message.contains("disabled") && (message.contains("line") || message.contains("user") || message.contains("account")) -> R.string.account_error_line_disabled
+            message.contains("expired") -> R.string.account_error_line_expired
+            message.contains("panel cloud api url is not configured") -> R.string.account_error_panel_not_configured
+            message.contains("failed to load service list") || message.contains("empty portals response") -> R.string.account_error_portal_list_failed
+            message.contains("email not confirmed") -> R.string.account_error_email_not_confirmed
+            message.contains("user already registered") -> R.string.account_error_email_already_registered
+            message.contains("invalid email") -> R.string.account_error_invalid_email
+            message.contains("password") && message.contains("short") -> R.string.account_error_password_too_short
+            message.contains("password") && message.contains("weak") -> R.string.account_error_password_too_weak
+            message.contains("signup is disabled") -> R.string.account_error_signup_disabled
+            message.contains("rate limit") || message.contains("too many requests") -> R.string.account_error_rate_limited
 
             // Network errors
             message.contains("unable to resolve host") || message.contains("no address associated") -> R.string.account_error_no_internet

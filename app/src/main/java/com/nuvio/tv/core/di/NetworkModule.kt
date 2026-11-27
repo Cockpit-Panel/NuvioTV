@@ -316,12 +316,23 @@ object NetworkModule {
     @Provides
     @Singleton
     @Named("panelCloud")
-    fun providePanelCloudRetrofit(okHttpClient: OkHttpClient, moshi: Moshi): Retrofit =
-        Retrofit.Builder()
+    fun providePanelCloudRetrofit(okHttpClient: OkHttpClient, moshi: Moshi): Retrofit {
+        val panelClient = okHttpClient.newBuilder()
+            .cache(null)
+            .addInterceptor { chain ->
+                val request = chain.request().newBuilder()
+                    .header("Cache-Control", "no-cache, no-store")
+                    .header("Pragma", "no-cache")
+                    .build()
+                chain.proceed(request)
+            }
+            .build()
+        return Retrofit.Builder()
             .baseUrl(normalizedBaseUrl(BuildConfig.PANEL_CLOUD_API_URL, "https://localhost/"))
-            .client(okHttpClient)
+            .client(panelClient)
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
+    }
 
     @Provides
     @Singleton

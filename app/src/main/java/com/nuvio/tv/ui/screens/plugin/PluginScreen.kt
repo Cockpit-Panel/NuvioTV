@@ -165,16 +165,6 @@ fun PluginScreenContent(
         onDispose { viewModel.stopQrMode() }
     }
 
-    LaunchedEffect(uiState.isQrModeActive) {
-        if (uiState.isQrModeActive) {
-            hasEnteredQrMode = true
-        } else if (hasEnteredQrMode && uiState.pendingRepoChange == null) {
-            repeat(2) { withFrameNanos { } }
-            manageFromPhoneFocusRequester.requestFocus()
-            hasEnteredQrMode = false
-        }
-    }
-
     // Clear messages after delay
     LaunchedEffect(uiState.successMessage) {
         if (uiState.successMessage != null) {
@@ -206,7 +196,7 @@ fun PluginScreenContent(
                 verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.lg),
                 modifier = Modifier
                     .fillMaxSize()
-                    .focusRestorer(manageFromPhoneFocusRequester)
+                    .focusRestorer()
             ) {
             if (viewModel.isReadOnly) {
                 item {
@@ -239,14 +229,6 @@ fun PluginScreenContent(
                             }
                         },
                         isLoading = uiState.isAddingRepo
-                    )
-                }
-
-                // Manage from phone card
-                item {
-                    ManageFromPhoneCard(
-                        onClick = { viewModel.onEvent(PluginUiEvent.StartQrMode) },
-                        focusRequester = manageFromPhoneFocusRequester
                     )
                 }
             }
@@ -338,16 +320,7 @@ fun PluginScreenContent(
         errorMessage = uiState.errorMessage
     )
 
-    if (uiState.isQrModeActive || uiState.pendingRepoChange != null || uiState.pendingScraperEnable != null) {
-        if (uiState.isQrModeActive) {
-            QrCodeOverlay(
-                qrBitmap = uiState.qrCodeBitmap,
-                serverUrl = uiState.serverUrl,
-                onClose = { viewModel.onEvent(PluginUiEvent.StopQrMode) },
-                hasPendingChange = uiState.pendingRepoChange != null
-            )
-        }
-
+    if (uiState.pendingRepoChange != null || uiState.pendingScraperEnable != null) {
         uiState.pendingRepoChange?.let { pending ->
             ConfirmRepoChangesDialog(
                 pendingChange = pending,

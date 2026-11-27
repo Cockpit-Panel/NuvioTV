@@ -136,6 +136,19 @@ class AddonRepositoryImpl(
 
     init {
         syncScope.launch { loadManifestCacheFromDisk() }
+        syncScope.launch {
+            try {
+                authManager.authState.collect { state ->
+                    if (state is com.nuvio.tv.domain.model.AuthState.SignedOut) {
+                        clearLocalCache()
+                    }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // Relaxed AuthManager mocks in unit tests may throw on StateFlow.collect
+            }
+        }
     }
 
     private fun isCacheStale(): Boolean =
@@ -335,11 +348,15 @@ class AddonRepositoryImpl(
     }
 
     suspend fun clearLocalCache() {
-        manifestCache.clear()
+        synchronized(manifestCacheLock) {
+            manifestCache.clear()
+        }
+        lastManifestRefreshAttemptTime = 0L
         context.getSharedPreferences(MANIFEST_CACHE_PREFS, Context.MODE_PRIVATE)
             .edit()
             .clear()
             .apply()
+        bumpManifestCacheRevision()
     }
 
     override suspend fun setAddonOrder(urls: List<String>) {

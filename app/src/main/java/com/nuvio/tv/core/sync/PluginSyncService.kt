@@ -108,6 +108,12 @@ class PluginSyncService @Inject constructor(
                 val profileId = pluginProfileId()
                 val response = panelCloudApi.getPlugins("Bearer $token", profileId)
                 if (!response.isSuccessful) {
+                    val errorBody = runCatching { response.errorBody()?.string() }.getOrNull()
+                    authManager.invalidatePanelSessionIfUnauthorized(
+                        expectedAccessToken = token,
+                        statusCode = response.code(),
+                        errorBody = errorBody
+                    )
                     return@withContext Result.failure(
                         IllegalStateException("Failed to load panel plugins (${response.code()})")
                     )

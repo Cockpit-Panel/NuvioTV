@@ -126,6 +126,7 @@ class PluginSyncProfileTest {
         every { profileManager.profiles } returns profiles
         every { profileManager.activeProfile } answers { profiles.value.first { it.id == activeProfileId.value } }
         val authManager = mockk<AuthManager>(relaxed = true)
+        every { authManager.supportsFullCloudSync } returns true
         val identity = mockk<SyncClientIdentity>()
         every { identity.currentClientId() } returns "nuvio-tv-plugin-sync-test"
         val pushedProfiles = mutableListOf<Int>()
@@ -151,7 +152,8 @@ class PluginSyncProfileTest {
             authManager,
             plugins,
             profileManager,
-            identity
+            identity,
+            mockk(relaxed = true)
         )
         return Harness(plugins, service, activeProfileId, factory, pushedProfiles, pushedRepositoryIds)
     }
