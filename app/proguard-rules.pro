@@ -40,6 +40,7 @@
 # ── Data classes (DTOs) ────────────────────────────────────────────────────────
 # Keep all DTO classes used with Moshi/Retrofit
 -keep class com.nuvio.tv.data.remote.dto.** { *; }
+-keep class com.nuvio.tv.data.remote.panel.** { *; }
 -keep class com.nuvio.tv.domain.model.** { *; }
 
 # ── Kotlin ─────────────────────────────────────────────────────────────────────
