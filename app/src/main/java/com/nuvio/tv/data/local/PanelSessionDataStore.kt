@@ -24,7 +24,9 @@ data class PanelSession(
     val email: String,
     val displayName: String? = null,
     val serverUrl: String? = null,
-    val serviceId: Int? = null
+    val serviceId: Int? = null,
+    val username: String? = null,
+    val password: String? = null
 )
 
 @Singleton
@@ -38,6 +40,8 @@ class PanelSessionDataStore @Inject constructor(
     private val displayNameKey = stringPreferencesKey("display_name")
     private val serverUrlKey = stringPreferencesKey("server_url")
     private val serviceIdKey = stringPreferencesKey("service_id")
+    private val usernameKey = stringPreferencesKey("username")
+    private val passwordKey = stringPreferencesKey("password")
 
     val session: Flow<PanelSession?> = context.panelSessionDataStore.data.map { preferences ->
         val accessToken = preferences[accessTokenKey]
@@ -53,7 +57,9 @@ class PanelSessionDataStore @Inject constructor(
                 email = email,
                 displayName = preferences[displayNameKey],
                 serverUrl = preferences[serverUrlKey],
-                serviceId = preferences[serviceIdKey]?.toIntOrNull()
+                serviceId = preferences[serviceIdKey]?.toIntOrNull(),
+                username = preferences[usernameKey],
+                password = preferences[passwordKey]
             )
         }
     }
@@ -69,6 +75,8 @@ class PanelSessionDataStore @Inject constructor(
             if (session.displayName == null) preferences.remove(displayNameKey) else preferences[displayNameKey] = session.displayName
             if (session.serverUrl == null) preferences.remove(serverUrlKey) else preferences[serverUrlKey] = session.serverUrl
             if (session.serviceId == null) preferences.remove(serviceIdKey) else preferences[serviceIdKey] = session.serviceId.toString()
+            if (session.username == null) preferences.remove(usernameKey) else preferences[usernameKey] = session.username
+            if (session.password == null) preferences.remove(passwordKey) else preferences[passwordKey] = session.password
         }
     }
 
@@ -81,6 +89,8 @@ class PanelSessionDataStore @Inject constructor(
             preferences.remove(displayNameKey)
             preferences.remove(serverUrlKey)
             preferences.remove(serviceIdKey)
+            preferences.remove(usernameKey)
+            preferences.remove(passwordKey)
         }
     }
 }

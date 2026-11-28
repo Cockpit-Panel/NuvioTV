@@ -39,6 +39,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -57,6 +58,7 @@ import java.net.ConnectException
 import java.net.NoRouteToHostException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Named
@@ -91,6 +93,7 @@ class AuthManager @Inject constructor(
     private val postgrest: Postgrest,
     private val httpClient: OkHttpClient,
     @param:Named("customServerAuth") private val customServerHttpClient: OkHttpClient,
+    @param:Named("addonPermissive") private val xtreamHttpClient: OkHttpClient,
     private val authSessionNoticeDataStore: AuthSessionNoticeDataStore,
     private val accountLocalDataResetService: AccountLocalDataResetService,
     private val authDiagnosticReportRepository: AuthDiagnosticReportRepository,
@@ -104,6 +107,14 @@ class AuthManager @Inject constructor(
     private val sessionValidator = AuthSessionValidator(auth)
     private val startupAuthLock = Any()
     private val authHttpClient = if (serverConfiguration.isCustom) customServerHttpClient else httpClient
+    private val xtreamValidationClient: OkHttpClient by lazy {
+        xtreamHttpClient.newBuilder()
+            .cache(null)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .callTimeout(15, TimeUnit.SECONDS)
+            .build()
+    }
 
     private val _authState = MutableStateFlow<AuthState>(AuthState.Loading)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
@@ -465,14 +476,17 @@ class AuthManager @Inject constructor(
             lastError = extractPanelErrorMessage(response.errorBody()?.string().orEmpty(), response.code())
         }
         val login = body ?: error(lastError)
+        val isXtream = login.user.id.startsWith("xtream:", ignoreCase = true)
         val session = PanelSession(
             accessToken = login.tokens.accessToken,
             refreshToken = login.tokens.refreshToken,
             userId = login.user.id,
             email = login.user.email.ifBlank { normalizedUsername },
             displayName = login.user.displayName,
-            serverUrl = login.user.serverUrl ?: portal.url,
-            serviceId = login.user.serviceId ?: portal.id
+            serverUrl = normalizePanelServerUrl(login.user.serverUrl ?: portal.url).ifBlank { null },
+            serviceId = login.user.serviceId ?: portal.id,
+            username = if (isXtream) normalizedUsername else null,
+            password = if (isXtream) password else null
         )
         lastPanelValidatedAtMs = panelValidationClockMs()
         currentPanelSession = session
@@ -521,17 +535,116 @@ class AuthManager @Inject constructor(
             return@withLock true
         }
         return@withLock try {
-            val validation = panelCloudApi.getAddons("Bearer ${session.accessToken}", 1)
+            var effectiveSession: PanelSession = session
+            var xtreamValidationResult: XtreamAccountValidationResult? = null
+
+            if (isXtreamPanelSession(effectiveSession)) {
+                val portalResponse = try {
+                    panelCloudApi.getPortals()
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (error: Throwable) {
+                    Log.w(TAG, "Unable to check active panel portals for Xtream session", error)
+                    null
+                }
+                if (portalResponse != null && portalResponse.isSuccessful) {
+                    val portals = portalResponse.body()?.portals.orEmpty()
+                    if (!isPanelServiceActiveForSession(effectiveSession, portals)) {
+                        Log.w(TAG, "Assigned panel service is no longer active; clearing local authentication")
+                        signOutIfMatchingPanelToken(effectiveSession.accessToken)
+                        return@withLock false
+                    }
+                    effectiveSession.serviceId?.let { serviceId ->
+                        val matchingPortal = portals.firstOrNull { it.id == serviceId }
+                        val normalizedUrl = normalizePanelServerUrl(matchingPortal?.url)
+                        if (normalizedUrl.isNotBlank() && normalizedUrl != normalizePanelServerUrl(effectiveSession.serverUrl)) {
+                            effectiveSession = effectiveSession.copy(serverUrl = normalizedUrl)
+                            panelSessionDataStore.save(effectiveSession)
+                            currentPanelSession = effectiveSession
+                            Log.i(TAG, "Updated panel service endpoint for stable service id=$serviceId")
+                        }
+                    }
+                }
+
+                val serverUrl = effectiveSession.serverUrl
+                val username = effectiveSession.username
+                val password = effectiveSession.password
+                if (!serverUrl.isNullOrBlank() && !username.isNullOrBlank() && !password.isNullOrBlank()) {
+                    xtreamValidationResult = validateXtreamAccount(serverUrl, username, password)
+                    if (xtreamValidationResult == XtreamAccountValidationResult.INVALID_OR_EXPIRED) {
+                        Log.w(TAG, "Xtream account is no longer active or has expired; clearing local authentication")
+                        signOutIfMatchingPanelToken(effectiveSession.accessToken)
+                        return@withLock false
+                    }
+                }
+            }
+
+            val validation = panelCloudApi.getAddons("Bearer ${effectiveSession.accessToken}", 1)
             if (validation.isSuccessful) {
                 lastPanelValidatedAtMs = panelValidationClockMs()
-                runCatching { reconcilePanelService(session) }
-                    .onFailure { Log.w(TAG, "Panel service reconciliation failed", it) }
+                if (!isXtreamPanelSession(effectiveSession)) {
+                    runCatching { reconcilePanelService(effectiveSession) }
+                        .onFailure { Log.w(TAG, "Panel service reconciliation failed", it) }
+                }
                 true
             } else {
                 val errorBody = runCatching { validation.errorBody()?.string() }.getOrNull()
                 if (isPanelSessionInvalidResponse(validation.code(), errorBody)) {
+                    val serverUrl = effectiveSession.serverUrl
+                    val username = effectiveSession.username
+                    val password = effectiveSession.password
+                    if (isXtreamPanelSession(effectiveSession) &&
+                        xtreamValidationResult == XtreamAccountValidationResult.ACTIVE &&
+                        !serverUrl.isNullOrBlank() &&
+                        !username.isNullOrBlank() &&
+                        !password.isNullOrBlank()
+                    ) {
+                        val refreshResponse = try {
+                            panelCloudApi.login(
+                                PanelLoginRequest(
+                                    serverUrl = serverUrl,
+                                    username = username,
+                                    password = password
+                                )
+                            )
+                        } catch (cancellation: CancellationException) {
+                            throw cancellation
+                        } catch (error: Throwable) {
+                            Log.w(TAG, "Failed to refresh renewed Xtream panel session transiently", error)
+                            return@withLock true
+                        }
+                        val refreshedBody = refreshResponse.body()
+                        if (refreshResponse.isSuccessful && refreshedBody != null) {
+                            val refreshedSession = effectiveSession.copy(
+                                accessToken = refreshedBody.tokens.accessToken,
+                                refreshToken = refreshedBody.tokens.refreshToken,
+                                userId = refreshedBody.user.id,
+                                email = refreshedBody.user.email.ifBlank { username },
+                                displayName = refreshedBody.user.displayName,
+                                serverUrl = normalizePanelServerUrl(
+                                    refreshedBody.user.serverUrl ?: serverUrl
+                                ).ifBlank { serverUrl },
+                                serviceId = refreshedBody.user.serviceId ?: effectiveSession.serviceId,
+                                username = username,
+                                password = password
+                            )
+                            lastPanelValidatedAtMs = panelValidationClockMs()
+                            currentPanelSession = refreshedSession
+                            panelSessionDataStore.save(refreshedSession)
+                            _authState.value = AuthState.FullAccount(refreshedSession.userId, refreshedSession.email)
+                            return@withLock true
+                        }
+                        val refreshErrorBody = runCatching { refreshResponse.errorBody()?.string() }.getOrNull()
+                        if (isPanelSessionInvalidResponse(refreshResponse.code(), refreshErrorBody)) {
+                            Log.w(TAG, "Panel rejected refreshed Xtream login (code=${refreshResponse.code()}); clearing local authentication")
+                            signOutIfMatchingPanelToken(effectiveSession.accessToken)
+                            return@withLock false
+                        }
+                        Log.w(TAG, "Panel Xtream session refresh returned non-terminal status code=${refreshResponse.code()}; keeping cached authentication")
+                        return@withLock true
+                    }
                     Log.w(TAG, "Panel account is no longer active (code=${validation.code()}); clearing local authentication")
-                    signOutIfMatchingPanelToken(session.accessToken)
+                    signOutIfMatchingPanelToken(effectiveSession.accessToken)
                     false
                 } else {
                     Log.w(TAG, "Panel validation returned non-terminal status code=${validation.code()}; keeping cached authentication")
@@ -543,6 +656,46 @@ class AuthManager @Inject constructor(
         } catch (error: Throwable) {
             Log.w(TAG, "Unable to validate panel account; keeping cached authentication", error)
             true
+        }
+    }
+
+    private suspend fun validateXtreamAccount(
+        serverUrl: String,
+        username: String,
+        password: String
+    ): XtreamAccountValidationResult {
+        val baseUrl = normalizePanelServerUrl(serverUrl).toHttpUrlOrNull()
+            ?: return XtreamAccountValidationResult.TRANSIENT_ERROR
+        val requestUrl = baseUrl.newBuilder().apply {
+            if (!baseUrl.pathSegments.lastOrNull().equals("player_api.php", ignoreCase = true)) {
+                addPathSegment("player_api.php")
+            }
+            addQueryParameter("username", username)
+            addQueryParameter("password", password)
+        }.build()
+        val request = Request.Builder()
+            .url(requestUrl)
+            .get()
+            .header("Cache-Control", "no-cache, no-store")
+            .header("Pragma", "no-cache")
+            .header("Accept", "application/json")
+            .build()
+        return withContext(Dispatchers.IO) {
+            try {
+                xtreamValidationClient.newCall(request).execute().use { response ->
+                    val body = response.body?.string()
+                    evaluateXtreamPlayerApiResponse(
+                        statusCode = response.code,
+                        responseBody = body,
+                        nowEpochSeconds = panelValidationClockMs() / 1000L
+                    )
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Throwable) {
+                Log.w(TAG, "Xtream live validation failed transiently; keeping cached authentication", error)
+                XtreamAccountValidationResult.TRANSIENT_ERROR
+            }
         }
     }
 
